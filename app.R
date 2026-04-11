@@ -20,7 +20,7 @@ packages <- c(
   "DT",
   "scales"
 )
-
+ 
 new_packages <- packages[!(packages %in% installed.packages()[, "Package"])]
 if (length(new_packages) > 0) {
   cat(sprintf("[STARTUP] Installing missing packages: %s\n", paste(new_packages, collapse = ", ")))
