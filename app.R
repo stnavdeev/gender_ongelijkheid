@@ -67,7 +67,7 @@ type_labels <- c(
   mediaan_per_persoon = "Mediaan per persoon",
   mediaan_per_gebruiker = "Mediaan per gebruiker",
   n_totaal_gebruikers = "Aantal gebruikers",
-  sum_totaal_groep = "Totale som groep"
+  sum_totaal_groep = "Totale som"
 )
 
 family_labels <- c(
@@ -344,8 +344,11 @@ condition_flag_col <- function(df) {
   candidates[[1]]
 }
 
-metric_labeler <- function(metric_name) {
-  if (stringr::str_starts(metric_name, "heeft_") || stringr::str_starts(metric_name, "gebruikt_")) {
+metric_labeler <- function(metric_name, stat_type = NA_character_) {
+  is_share_metric <- stringr::str_starts(metric_name, "heeft_") || stringr::str_starts(metric_name, "gebruikt_")
+  is_count_type <- !is.na(stat_type) && stat_type %in% c("n_totaal_gebruikers", "sum_totaal_groep")
+
+  if (is_share_metric && !is_count_type) {
     return(scales::label_percent(accuracy = 1, decimal.mark = ","))
   }
   scales::label_number(big.mark = ".", decimal.mark = ",")
@@ -418,7 +421,7 @@ build_series_label <- function(df, condition_col = NA_character_, condition_labe
 }
 
 prepare_time_series_aesthetics <- function(df, condition_col = NA_character_, condition_label = NA_character_) {
-  has_sex <- "geslacht" %in% names(df) && dplyr::n_distinct(df$geslacht) > 1
+  has_sex <- "geslacht" %in% names(df) && all(unique(as.character(stats::na.omit(df$geslacht))) %in% names(sex_palette))
   has_condition <- !is.na(condition_col) &&
     condition_col %in% names(df) &&
     dplyr::n_distinct(df[[condition_col]]) > 1
@@ -507,6 +510,156 @@ build_time_series_plot <- function(df, x_var, title, subtitle, y_labeler, vline 
   p
 }
 
+make_line_only_legend <- function(plot_obj, order_mode = c("default", "sex_then_linetype")) {
+  order_mode <- match.arg(order_mode)
+  traces <- plot_obj$x$data %||% list()
+  if (length(traces) == 0) {
+    return(plot_obj)
+  }
+
+  normalize_trace <- function(trace) {
+    if ((is.null(trace$legendgroup) || !nzchar(trace$legendgroup)) &&
+        !is.null(trace$name) && nzchar(trace$name)) {
+      trace$legendgroup <- trace$name
+    }
+    trace
+  }
+
+  plot_obj$x$data <- lapply(traces, normalize_trace)
+
+  legend_traces <- Filter(function(trace) {
+    mode <- trace$mode %||% ""
+    !is.null(trace$name) &&
+      nzchar(trace$name) &&
+      (grepl("lines", mode) || !is.null(trace$line))
+  }, plot_obj$x$data)
+
+  if (length(legend_traces) == 0) {
+    return(plot_obj)
+  }
+
+  legend_keys <- vapply(legend_traces, function(trace) {
+    paste(
+      trace$name %||% "",
+      trace$legendgroup %||% "",
+      trace$line$color %||% trace$marker$color %||% "",
+      trace$line$dash %||% "solid",
+      sep = "||"
+    )
+  }, character(1))
+  legend_traces <- legend_traces[!duplicated(legend_keys)]
+
+  if (identical(order_mode, "sex_then_linetype")) {
+    sex_rank <- function(trace_name) {
+      sex_name <- names(sex_palette)[vapply(names(sex_palette), startsWith, logical(1), x = trace_name %||% "")]
+      if (length(sex_name) == 0) {
+        return(length(sex_palette) + 1)
+      }
+      match(sex_name[[1]], names(sex_palette))
+    }
+
+    dash_rank <- function(trace) {
+      dash_value <- trace$line$dash %||% "solid"
+      match(dash_value, c("solid", "dash", "dot", "dashdot")) %||% 99
+    }
+
+    trace_order <- order(
+      vapply(legend_traces, function(trace) sex_rank(trace$name), numeric(1)),
+      vapply(legend_traces, dash_rank, numeric(1)),
+      vapply(legend_traces, function(trace) trace$name %||% "", character(1))
+    )
+    legend_traces <- legend_traces[trace_order]
+  }
+
+  plot_obj$x$data <- lapply(plot_obj$x$data, function(trace) {
+    trace$showlegend <- FALSE
+    trace
+  })
+
+  for (trace in legend_traces) {
+    plot_obj <- plotly::add_trace(
+      plot_obj,
+      x = 0,
+      y = 0,
+      type = "scatter",
+      mode = "lines",
+      visible = "legendonly",
+      hoverinfo = "skip",
+      showlegend = TRUE,
+      name = trace$name,
+      legendgroup = trace$legendgroup %||% trace$name,
+      line = list(
+        color = trace$line$color %||% trace$marker$color %||% "#4b5563",
+        dash = trace$line$dash %||% "solid",
+        width = trace$line$width %||% 2
+      ),
+      inherit = FALSE
+    )
+  }
+
+  plot_obj
+}
+
+build_event_study_annotations <- function(df) {
+  if (!("linetype_value" %in% names(df)) || dplyr::n_distinct(df$linetype_value) <= 1) {
+    return(list())
+  }
+
+  sexes <- ordered_sex_levels(df$geslacht)
+  sexes <- sexes[sexes %in% unique(as.character(df$geslacht))]
+  if (length(sexes) == 0) {
+    return(list())
+  }
+
+  linetype_labels <- if (is.factor(df$linetype_value)) levels(df$linetype_value) else unique(as.character(df$linetype_value))
+  linetype_labels <- linetype_labels[linetype_labels %in% unique(as.character(df$linetype_value))]
+  dash_map <- condition_linetype_values(linetype_labels)
+  dash_order <- match(unname(dash_map), c("solid", "dashed", "dot", "dashdot"))
+  dash_order[is.na(dash_order)] <- 99
+  linetype_labels <- linetype_labels[order(dash_order, linetype_labels)]
+
+  build_sample <- function(label, color) {
+    dash_value <- dash_map[[label]] %||% "solid"
+    line_html <- if (identical(dash_value, "solid")) {
+      "&#9473;&#9473;&#9473;"
+    } else {
+      "&#9473; &#9473; &#9473;"
+    }
+    paste0(
+      "<span style='color:", color, ";'>", line_html, "</span>",
+      "&nbsp;", label
+    )
+  }
+
+  y_positions <- seq(-0.18, by = -0.09, length.out = length(sexes))
+
+  lapply(seq_along(sexes), function(i) {
+    sex <- sexes[[i]]
+    color <- sex_palette[[sex]] %||% "#4b5563"
+    row_text <- paste(
+      vapply(linetype_labels, build_sample, character(1), color = color),
+      collapse = "&nbsp;&nbsp;&nbsp;&nbsp;"
+    )
+
+    list(
+      x = 0,
+      y = y_positions[[i]],
+      xref = "paper",
+      yref = "paper",
+      xanchor = "left",
+      yanchor = "top",
+      align = "left",
+      showarrow = FALSE,
+      text = paste0(
+        "<span style='color:", color, "; font-weight:600;'>", sex, ":</span>",
+        "&nbsp;&nbsp;",
+        row_text
+      ),
+      font = list(size = 12, color = "#4b5563")
+    )
+  })
+}
+
 load_map_sf <- function(path) {
   map_df <- sf::st_read(path, quiet = TRUE)
 
@@ -574,11 +727,21 @@ build_map_long <- function(df, group_key) {
       rows[[length(rows) + 1]] <- expected_row
     }
 
-    if (!is.na(ratio_col)) {
+    if (!is.na(ratio_col) || !is.na(expected_col)) {
       ratio_row <- common
       ratio_row$value_kind <- "ratio"
       ratio_row$value_label <- "Afwijking t.o.v. verwachting"
-      ratio_row$value <- as.numeric(df[[ratio_col]])
+      if (!is.na(ratio_col)) {
+        ratio_row$value <- as.numeric(df[[ratio_col]])
+      } else {
+        observed_value <- as.numeric(df[[outcome_key]])
+        expected_value <- as.numeric(df[[expected_col]])
+        ratio_row$value <- dplyr::if_else(
+          is.na(expected_value) | expected_value == 0,
+          NA_real_,
+          observed_value / expected_value
+        )
+      }
       rows[[length(rows) + 1]] <- ratio_row
     }
 
@@ -632,12 +795,11 @@ map_long <- {
 }
 
 ui <- navbarPage(
-  title = "Gender Dashboard",
+  title = "Ongelijkheid tussen mannen en vrouwen",
   id = "main_nav",
   header = tags$div(
     style = "padding: 12px 18px 4px 18px; color: #4b5563; font-size: 14px;",
-    "Explore yearly trends, matching profiles, event studies, and stadsdeel maps from output.xlsx. ",
-    "The map tab uses the colour and legend logic from create_maps_outside_midpunt_wit.R."
+    "Interactieve tool voor het verkennen van verschillen tussen mannen en vrouwen in zorggebruik, zorgkosten en aandoeningsprevalentie in Amsterdam en Nederland."
   ),
   tabPanel(
     "Yearly Trends",
@@ -645,13 +807,13 @@ ui <- navbarPage(
       sidebarPanel(
         selectInput(
           "year_sheet",
-          "Sheet",
+          "Dataset",
           choices = stats::setNames(yearly_index$sheet, yearly_index$sheet_label),
           selected = yearly_index$sheet[[1]]
         ),
         selectInput("year_outcome", "Outcome", choices = NULL),
         selectInput("year_type", "Statistic", choices = NULL),
-        selectizeInput("year_sex", "Sex", choices = NULL, multiple = TRUE),
+        checkboxGroupInput("year_sex", "Sex", choices = NULL),
         checkboxGroupInput("year_region", "Area", choices = NULL),
         uiOutput("year_condition_ui")
       ),
@@ -671,13 +833,13 @@ ui <- navbarPage(
             sidebarPanel(
               selectInput(
                 "es_mean_sheet",
-                "Sheet",
+                "Dataset",
                 choices = stats::setNames(es_mean_index$sheet, es_mean_index$sheet_label),
                 selected = es_mean_index$sheet[[1]]
               ),
               selectInput("es_mean_outcome", "Outcome", choices = NULL),
               selectInput("es_mean_type", "Statistic", choices = NULL),
-              selectizeInput("es_mean_sex", "Sex", choices = NULL, multiple = TRUE),
+              checkboxGroupInput("es_mean_sex", "Sex", choices = NULL),
               checkboxGroupInput("es_mean_region", "Area", choices = NULL),
               uiOutput("es_mean_condition_ui")
             ),
@@ -693,12 +855,12 @@ ui <- navbarPage(
             sidebarPanel(
               selectInput(
                 "es_ci_sheet",
-                "Sheet",
+                "Dataset",
                 choices = stats::setNames(es_ci_index$sheet, es_ci_index$sheet_label),
                 selected = es_ci_index$sheet[[1]]
               ),
               selectInput("es_ci_outcome", "Outcome", choices = NULL),
-              selectizeInput("es_ci_sex", "Sex", choices = NULL, multiple = TRUE),
+              checkboxGroupInput("es_ci_sex", "Sex", choices = NULL),
               selectizeInput("es_ci_sample", "Sample", choices = NULL, multiple = TRUE)
             ),
             mainPanel(
@@ -716,12 +878,12 @@ ui <- navbarPage(
       sidebarPanel(
         selectInput(
           "profile_sheet",
-          "Sheet",
+          "Dataset",
           choices = stats::setNames(profile_index$sheet, profile_index$sheet_label),
           selected = profile_index$sheet[[1]]
         ),
         selectInput("profile_category", "Category", choices = NULL),
-        selectizeInput("profile_sex", "Sex", choices = NULL, multiple = TRUE),
+        checkboxGroupInput("profile_sex", "Sex", choices = NULL),
         selectizeInput("profile_region", "Area", choices = NULL, multiple = TRUE)
       ),
       mainPanel(
@@ -745,14 +907,9 @@ ui <- navbarPage(
         selectInput("map_family", "Outcome family", choices = NULL),
         selectInput("map_outcome", "Outcome", choices = NULL),
         checkboxInput("map_exclude_westpoort", "Exclude Westpoort", value = FALSE),
-        sliderInput("map_threshold", "Mask areas below this user count", min = 0, max = 100, value = 10, step = 5),
         checkboxInput("map_fixed_legend", "Fix legend across outcomes in this family", value = TRUE),
         checkboxInput("map_show_labels", "Show stadsdeel labels", value = TRUE),
-        downloadButton("dl_map", "Download map"),
-        p(
-          "Observed and expected prevalence maps use the white-to-deeppink palette from the standalone script. ",
-          "Ratio maps use darkslateblue to white to red."
-        )
+        downloadButton("dl_map", "Download map")
       ),
       mainPanel(
         plotOutput("plot_map", height = "700px"),
@@ -784,11 +941,10 @@ server <- function(input, output, session) {
       choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
       selected = outcomes[[1]]
     )
-    updateSelectizeInput(
+    updateCheckboxGroupInput(
       session, "year_sex",
-      choices = sort(unique(as.character(df$geslacht))),
-      selected = sort(unique(as.character(df$geslacht))),
-      server = TRUE
+      choices = ordered_sex_levels(df$geslacht),
+      selected = ordered_sex_levels(df$geslacht)
     )
     updateCheckboxGroupInput(
       session, "year_region",
@@ -832,12 +988,11 @@ server <- function(input, output, session) {
       return(NULL)
     }
     values <- sort(unique(as.character(df[[flag_col]])))
-    selectizeInput(
+    checkboxGroupInput(
       "year_condition_filter",
       "Diagnosis status",
       choices = stats::setNames(values, pretty_binary(values)),
-      selected = values,
-      multiple = TRUE
+      selected = values
     )
   })
 
@@ -881,12 +1036,13 @@ server <- function(input, output, session) {
       x_var = "year",
       title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
       subtitle = paste(pretty_metric_name(input$year_outcome), "|", pretty_type(input$year_type)),
-      y_labeler = metric_labeler(input$year_outcome),
+      y_labeler = metric_labeler(input$year_outcome, input$year_type),
       facet_var = "amsterdam",
       compact_facets = TRUE
     )
 
     plotly::ggplotly(p, tooltip = "text") |>
+      make_line_only_legend() |>
       plotly::layout(
         legend = list(
           orientation = "h",
@@ -915,11 +1071,10 @@ server <- function(input, output, session) {
       choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
       selected = outcomes[[1]]
     )
-    updateSelectizeInput(
+    updateCheckboxGroupInput(
       session, "es_mean_sex",
-      choices = sort(unique(as.character(df$geslacht))),
-      selected = sort(unique(as.character(df$geslacht))),
-      server = TRUE
+      choices = ordered_sex_levels(df$geslacht),
+      selected = ordered_sex_levels(df$geslacht)
     )
     updateCheckboxGroupInput(
       session, "es_mean_region",
@@ -963,12 +1118,11 @@ server <- function(input, output, session) {
       return(NULL)
     }
     values <- sort(unique(as.character(df[[flag_col]])))
-    selectizeInput(
+    checkboxGroupInput(
       "es_mean_condition_filter",
       "Diagnosis status",
       choices = stats::setNames(values, pretty_binary(values)),
-      selected = values,
-      multiple = TRUE
+      selected = values
     )
   })
 
@@ -1006,13 +1160,15 @@ server <- function(input, output, session) {
     df <- es_mean_filtered()
     validate(need(nrow(df) > 0, "No data available for the current selection."))
     sheet_meta <- es_mean_index[es_mean_index$sheet == input$es_mean_sheet, , drop = FALSE]
+    custom_annotations <- build_event_study_annotations(df)
+    bottom_margin <- if (length(custom_annotations) > 0) 115 else 70
 
     p <- build_time_series_plot(
       df = df,
       x_var = "years_since_diagnosis",
       title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
       subtitle = paste(pretty_metric_name(input$es_mean_outcome), "|", pretty_type(input$es_mean_type)),
-      y_labeler = metric_labeler(input$es_mean_outcome),
+      y_labeler = metric_labeler(input$es_mean_outcome, input$es_mean_type),
       vline = 0,
       facet_var = "amsterdam",
       compact_facets = TRUE
@@ -1020,6 +1176,9 @@ server <- function(input, output, session) {
 
     plotly::ggplotly(p, tooltip = "text") |>
       plotly::layout(
+        showlegend = FALSE,
+        annotations = custom_annotations,
+        margin = list(b = bottom_margin),
         legend = list(
           orientation = "h",
           x = 0,
@@ -1041,11 +1200,10 @@ server <- function(input, output, session) {
       choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
       selected = outcomes[[1]]
     )
-    updateSelectizeInput(
+    updateCheckboxGroupInput(
       session, "es_ci_sex",
-      choices = sort(unique(as.character(df$geslacht))),
-      selected = sort(unique(as.character(df$geslacht))),
-      server = TRUE
+      choices = ordered_sex_levels(df$geslacht),
+      selected = ordered_sex_levels(df$geslacht)
     )
     updateSelectizeInput(
       session, "es_ci_sample",
@@ -1133,11 +1291,10 @@ server <- function(input, output, session) {
       choices = stats::setNames(categories, pretty_default(categories)),
       selected = categories[[1]]
     )
-    updateSelectizeInput(
+    updateCheckboxGroupInput(
       session, "profile_sex",
-      choices = sort(unique(as.character(df$geslacht))),
-      selected = sort(unique(as.character(df$geslacht))),
-      server = TRUE
+      choices = ordered_sex_levels(df$geslacht),
+      selected = ordered_sex_levels(df$geslacht)
     )
     updateSelectizeInput(
       session, "profile_region",
@@ -1247,7 +1404,7 @@ server <- function(input, output, session) {
     if (length(sex_choices) == 0) {
       return(NULL)
     }
-    selectInput(
+    radioButtons(
       "map_sex",
       "Sex",
       choices = stats::setNames(sex_choices, sex_choices),
@@ -1348,8 +1505,7 @@ server <- function(input, output, session) {
     df |>
       dplyr::mutate(
         masked_value = dplyr::if_else(
-          (isTRUE(input$map_exclude_westpoort) & stadsdelen == "B Westpoort") |
-            (!is.na(count) & count < input$map_threshold),
+          isTRUE(input$map_exclude_westpoort) & stadsdelen == "B Westpoort",
           NA_real_,
           display_value
         )
@@ -1373,8 +1529,7 @@ server <- function(input, output, session) {
     df |>
       dplyr::mutate(
         masked_value = dplyr::if_else(
-          (isTRUE(input$map_exclude_westpoort) & stadsdelen == "B Westpoort") |
-            (!is.na(count) & count < input$map_threshold),
+          isTRUE(input$map_exclude_westpoort) & stadsdelen == "B Westpoort",
           NA_real_,
           display_value
         )
