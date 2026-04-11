@@ -18,7 +18,6 @@ jobs:
         mkdir -p deploy
         cp app.R deploy/
         cp output.xlsx deploy/
-        cp map.gpkg deploy/
 
     - name: 📂 Sync files via SFTP
       uses: wlixcc/SFTP-Deploy-Action@v1.2.4
