@@ -860,7 +860,7 @@ ui <- navbarPage(
               ),
               selectInput("es_ci_outcome", "Uitkomst", choices = NULL),
               checkboxGroupInput("es_ci_sex", "Geslacht", choices = NULL),
-              selectizeInput("es_ci_sample", "Steekproef", choices = NULL, multiple = TRUE)
+              checkboxGroupInput("es_ci_sample", "Gebied", choices = NULL)
             ),
             mainPanel(
               plotly::plotlyOutput("plot_es_ci", height = "520px"),
@@ -883,7 +883,7 @@ ui <- navbarPage(
         ),
         selectInput("profile_category", "Categorie", choices = NULL),
         checkboxGroupInput("profile_sex", "Geslacht", choices = NULL),
-        selectizeInput("profile_region", "Gebied", choices = NULL, multiple = TRUE)
+        checkboxGroupInput("profile_region", "Gebied", choices = NULL)
       ),
       mainPanel(
         plotly::plotlyOutput("plot_profile", height = "560px"),
@@ -906,7 +906,7 @@ ui <- navbarPage(
         selectInput("map_family", "Uitkomstgroep", choices = NULL),
         selectInput("map_outcome", "Uitkomst", choices = NULL),
         checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = FALSE),
-        checkboxInput("map_fixed_legend", "Legenda binnen deze uitkomstgroep vastzetten", value = TRUE),
+        checkboxInput("map_fixed_legend", "Legenda per uitkomstgroep vastzetten", value = TRUE),
         checkboxInput("map_show_labels", "Labels van stadsdelen tonen", value = TRUE),
         downloadButton("dl_map", "Kaart downloaden")
       ),
@@ -1204,11 +1204,10 @@ server <- function(input, output, session) {
       choices = ordered_sex_levels(df$geslacht),
       selected = ordered_sex_levels(df$geslacht)
     )
-    updateSelectizeInput(
+    updateCheckboxGroupInput(
       session, "es_ci_sample",
-      choices = sort(unique(as.character(df$sample))),
-      selected = sort(unique(as.character(df$sample))),
-      server = TRUE
+      choices = ordered_area_levels(df$sample),
+      selected = ordered_area_levels(df$sample)
     )
   }, ignoreNULL = FALSE)
 
@@ -1233,7 +1232,7 @@ server <- function(input, output, session) {
     palette_values <- palette_for_values(ordered_sex_levels(df$geslacht))
     df$tooltip <- paste0(
       "Geslacht: ", df$geslacht, "<br>",
-      "Steekproef: ", df$sample, "<br>",
+      "Gebied: ", df$sample, "<br>",
       "Jaren sinds diagnose: ", df$t, "<br>",
       "Schatting: ", scales::number(df$coef, big.mark = ".", decimal.mark = ",", accuracy = 0.001), "<br>",
       "95%-BI: [",
@@ -1295,11 +1294,10 @@ server <- function(input, output, session) {
       choices = ordered_sex_levels(df$geslacht),
       selected = ordered_sex_levels(df$geslacht)
     )
-    updateSelectizeInput(
+    updateCheckboxGroupInput(
       session, "profile_region",
-      choices = sort(unique(as.character(df$amsterdam))),
-      selected = sort(unique(as.character(df$amsterdam))),
-      server = TRUE
+      choices = ordered_area_levels(df$amsterdam),
+      selected = ordered_area_levels(df$amsterdam)
     )
   }, ignoreNULL = FALSE)
 
@@ -1518,11 +1516,6 @@ server <- function(input, output, session) {
         value_kind == input$map_value_kind,
         family_key == input$map_family
       )
-
-    if (identical(input$map_group, "sex")) {
-      df <- df |>
-        dplyr::filter(geslacht == (input$map_sex %||% unique(df$geslacht)[1]))
-    }
 
     df |>
       dplyr::mutate(
