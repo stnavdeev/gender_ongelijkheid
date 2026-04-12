@@ -459,11 +459,10 @@ build_time_series_plot <- function(df, x_var, title, subtitle, y_labeler, vline 
   color_levels <- if (is.factor(df[[color_col]])) levels(df[[color_col]]) else unique(as.character(df[[color_col]]))
   color_levels <- color_levels[color_levels %in% unique(as.character(df[[color_col]]))]
   palette_values <- palette_for_values(color_levels)
-  x_label <- if (identical(x_var, "year")) "Year" else "Years since diagnosis"
   df$tooltip <- paste0(
-    "Series: ", df$series, "<br>",
-    x_label, ": ", df[[x_var]], "<br>",
-    "Value: ", y_labeler(df$value)
+    "Reeks: ", df$series, "<br>",
+    if (identical(x_var, "year")) "Jaar" else "Jaren sinds diagnose", ": ", df[[x_var]], "<br>",
+    "Waarde: ", y_labeler(df$value)
   )
 
   p <- ggplot(df, aes(
@@ -802,7 +801,7 @@ ui <- navbarPage(
     "Interactieve tool voor het verkennen van verschillen tussen mannen en vrouwen in zorggebruik, zorgkosten en aandoeningsprevalentie in Amsterdam en Nederland."
   ),
   tabPanel(
-    "Yearly Trends",
+    "Jaarlijkse trends",
     sidebarLayout(
       sidebarPanel(
         selectInput(
@@ -811,10 +810,10 @@ ui <- navbarPage(
           choices = stats::setNames(yearly_index$sheet, yearly_index$sheet_label),
           selected = yearly_index$sheet[[1]]
         ),
-        selectInput("year_outcome", "Outcome", choices = NULL),
-        selectInput("year_type", "Statistic", choices = NULL),
-        checkboxGroupInput("year_sex", "Sex", choices = NULL),
-        checkboxGroupInput("year_region", "Area", choices = NULL),
+        selectInput("year_outcome", "Uitkomst", choices = NULL),
+        selectInput("year_type", "Statistiek", choices = NULL),
+        checkboxGroupInput("year_sex", "Geslacht", choices = NULL),
+        checkboxGroupInput("year_region", "Gebied", choices = NULL),
         uiOutput("year_condition_ui")
       ),
       mainPanel(
@@ -824,11 +823,11 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
-    "Event Studies",
+    "Event studies",
     fluidPage(
       tabsetPanel(
         tabPanel(
-          "Observed Means",
+          "Geobserveerde gemiddelden",
           sidebarLayout(
             sidebarPanel(
               selectInput(
@@ -837,10 +836,10 @@ ui <- navbarPage(
                 choices = stats::setNames(es_mean_index$sheet, es_mean_index$sheet_label),
                 selected = es_mean_index$sheet[[1]]
               ),
-              selectInput("es_mean_outcome", "Outcome", choices = NULL),
-              selectInput("es_mean_type", "Statistic", choices = NULL),
-              checkboxGroupInput("es_mean_sex", "Sex", choices = NULL),
-              checkboxGroupInput("es_mean_region", "Area", choices = NULL),
+              selectInput("es_mean_outcome", "Uitkomst", choices = NULL),
+              selectInput("es_mean_type", "Statistiek", choices = NULL),
+              checkboxGroupInput("es_mean_sex", "Geslacht", choices = NULL),
+              checkboxGroupInput("es_mean_region", "Gebied", choices = NULL),
               uiOutput("es_mean_condition_ui")
             ),
             mainPanel(
@@ -850,7 +849,7 @@ ui <- navbarPage(
           )
         ),
         tabPanel(
-          "Estimated Effects",
+          "Geschatte effecten",
           sidebarLayout(
             sidebarPanel(
               selectInput(
@@ -859,9 +858,9 @@ ui <- navbarPage(
                 choices = stats::setNames(es_ci_index$sheet, es_ci_index$sheet_label),
                 selected = es_ci_index$sheet[[1]]
               ),
-              selectInput("es_ci_outcome", "Outcome", choices = NULL),
-              checkboxGroupInput("es_ci_sex", "Sex", choices = NULL),
-              selectizeInput("es_ci_sample", "Sample", choices = NULL, multiple = TRUE)
+              selectInput("es_ci_outcome", "Uitkomst", choices = NULL),
+              checkboxGroupInput("es_ci_sex", "Geslacht", choices = NULL),
+              selectizeInput("es_ci_sample", "Steekproef", choices = NULL, multiple = TRUE)
             ),
             mainPanel(
               plotly::plotlyOutput("plot_es_ci", height = "520px"),
@@ -873,7 +872,7 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
-    "Profiles",
+    "Profielen",
     sidebarLayout(
       sidebarPanel(
         selectInput(
@@ -882,9 +881,9 @@ ui <- navbarPage(
           choices = stats::setNames(profile_index$sheet, profile_index$sheet_label),
           selected = profile_index$sheet[[1]]
         ),
-        selectInput("profile_category", "Category", choices = NULL),
-        checkboxGroupInput("profile_sex", "Sex", choices = NULL),
-        selectizeInput("profile_region", "Area", choices = NULL, multiple = TRUE)
+        selectInput("profile_category", "Categorie", choices = NULL),
+        checkboxGroupInput("profile_sex", "Geslacht", choices = NULL),
+        selectizeInput("profile_region", "Gebied", choices = NULL, multiple = TRUE)
       ),
       mainPanel(
         plotly::plotlyOutput("plot_profile", height = "560px"),
@@ -893,23 +892,23 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
-    "Maps",
+    "Kaarten",
     sidebarLayout(
       sidebarPanel(
         selectInput(
           "map_group",
-          "Map level",
+          "Kaartniveau",
           choices = stats::setNames(c("total", "sex"), c("Totaal", "Geslacht")),
           selected = if ("sex" %in% unique(map_long$group_key)) "sex" else "total"
         ),
         uiOutput("map_sex_ui"),
-        selectInput("map_value_kind", "Map type", choices = NULL),
-        selectInput("map_family", "Outcome family", choices = NULL),
-        selectInput("map_outcome", "Outcome", choices = NULL),
-        checkboxInput("map_exclude_westpoort", "Exclude Westpoort", value = FALSE),
-        checkboxInput("map_fixed_legend", "Fix legend across outcomes in this family", value = TRUE),
-        checkboxInput("map_show_labels", "Show stadsdeel labels", value = TRUE),
-        downloadButton("dl_map", "Download map")
+        selectInput("map_value_kind", "Kaarttype", choices = NULL),
+        selectInput("map_family", "Uitkomstgroep", choices = NULL),
+        selectInput("map_outcome", "Uitkomst", choices = NULL),
+        checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = FALSE),
+        checkboxInput("map_fixed_legend", "Legenda binnen deze uitkomstgroep vastzetten", value = TRUE),
+        checkboxInput("map_show_labels", "Labels van stadsdelen tonen", value = TRUE),
+        downloadButton("dl_map", "Kaart downloaden")
       ),
       mainPanel(
         plotOutput("plot_map", height = "700px"),
@@ -990,7 +989,7 @@ server <- function(input, output, session) {
     values <- sort(unique(as.character(df[[flag_col]])))
     checkboxGroupInput(
       "year_condition_filter",
-      "Diagnosis status",
+      "Diagnosestatus",
       choices = stats::setNames(values, pretty_binary(values)),
       selected = values
     )
@@ -1028,7 +1027,7 @@ server <- function(input, output, session) {
 
   output$plot_year <- plotly::renderPlotly({
     df <- year_filtered()
-    validate(need(nrow(df) > 0, "No data available for the current selection."))
+    validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- yearly_index[yearly_index$sheet == input$year_sheet, , drop = FALSE]
 
     p <- build_time_series_plot(
@@ -1120,7 +1119,7 @@ server <- function(input, output, session) {
     values <- sort(unique(as.character(df[[flag_col]])))
     checkboxGroupInput(
       "es_mean_condition_filter",
-      "Diagnosis status",
+      "Diagnosestatus",
       choices = stats::setNames(values, pretty_binary(values)),
       selected = values
     )
@@ -1158,7 +1157,7 @@ server <- function(input, output, session) {
 
   output$plot_es_mean <- plotly::renderPlotly({
     df <- es_mean_filtered()
-    validate(need(nrow(df) > 0, "No data available for the current selection."))
+    validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- es_mean_index[es_mean_index$sheet == input$es_mean_sheet, , drop = FALSE]
     custom_annotations <- build_event_study_annotations(df)
     bottom_margin <- if (length(custom_annotations) > 0) 115 else 70
@@ -1229,15 +1228,15 @@ server <- function(input, output, session) {
 
   output$plot_es_ci <- plotly::renderPlotly({
     df <- es_ci_filtered()
-    validate(need(nrow(df) > 0, "No data available for the current selection."))
+    validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- es_ci_index[es_ci_index$sheet == input$es_ci_sheet, , drop = FALSE]
     palette_values <- palette_for_values(ordered_sex_levels(df$geslacht))
     df$tooltip <- paste0(
-      "Sex: ", df$geslacht, "<br>",
-      "Sample: ", df$sample, "<br>",
-      "Years since diagnosis: ", df$t, "<br>",
-      "Estimate: ", scales::number(df$coef, big.mark = ".", decimal.mark = ",", accuracy = 0.001), "<br>",
-      "95% CI: [",
+      "Geslacht: ", df$geslacht, "<br>",
+      "Steekproef: ", df$sample, "<br>",
+      "Jaren sinds diagnose: ", df$t, "<br>",
+      "Schatting: ", scales::number(df$coef, big.mark = ".", decimal.mark = ",", accuracy = 0.001), "<br>",
+      "95%-BI: [",
       scales::number(df$lo, big.mark = ".", decimal.mark = ",", accuracy = 0.001),
       ", ",
       scales::number(df$hi, big.mark = ".", decimal.mark = ",", accuracy = 0.001),
@@ -1325,7 +1324,7 @@ server <- function(input, output, session) {
 
   output$plot_profile <- plotly::renderPlotly({
     df <- profile_filtered()
-    validate(need(nrow(df) > 0, "No data available for the current selection."))
+    validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     palette_values <- profile_palette_for_labels(unique(df$condition_label))
     title_text <- paste(
       profile_index$condition_label[profile_index$sheet == input$profile_sheet],
@@ -1335,10 +1334,10 @@ server <- function(input, output, session) {
 
     p <- if (identical(input$profile_category, "leeftijd")) {
       df$tooltip <- paste0(
-        "Condition: ", df$condition_label, "<br>",
-        "Sex: ", df$geslacht, "<br>",
-        "Area: ", df$amsterdam, "<br>",
-        "Value: ", scales::number(df$share, big.mark = ".", decimal.mark = ",", accuracy = 0.1)
+        "Conditie: ", df$condition_label, "<br>",
+        "Geslacht: ", df$geslacht, "<br>",
+        "Gebied: ", df$amsterdam, "<br>",
+        "Waarde: ", scales::number(df$share, big.mark = ".", decimal.mark = ",", accuracy = 0.1)
       )
 
       ggplot(df, aes(x = condition_label, y = share, fill = condition_label, text = tooltip)) +
@@ -1354,12 +1353,12 @@ server <- function(input, output, session) {
         theme_dashboard()
     } else {
       df$tooltip <- paste0(
-        "Category: ", pretty_default(input$profile_category), "<br>",
-        "Level: ", df$level, "<br>",
-        "Condition: ", df$condition_label, "<br>",
-        "Sex: ", df$geslacht, "<br>",
-        "Area: ", df$amsterdam, "<br>",
-        "Value: ", scales::percent(df$share, accuracy = 0.1, decimal.mark = ",")
+        "Categorie: ", pretty_default(input$profile_category), "<br>",
+        "Niveau: ", df$level, "<br>",
+        "Conditie: ", df$condition_label, "<br>",
+        "Geslacht: ", df$geslacht, "<br>",
+        "Gebied: ", df$amsterdam, "<br>",
+        "Waarde: ", scales::percent(df$share, accuracy = 0.1, decimal.mark = ",")
       )
 
       ggplot(df, aes(x = level, y = share, fill = condition_label, text = tooltip)) +
@@ -1406,7 +1405,7 @@ server <- function(input, output, session) {
     }
     radioButtons(
       "map_sex",
-      "Sex",
+      "Geslacht",
       choices = stats::setNames(sex_choices, sex_choices),
       selected = sex_choices[[1]]
     )
@@ -1415,10 +1414,9 @@ server <- function(input, output, session) {
   observeEvent(input$map_group, {
     df <- map_long |>
       dplyr::filter(group_key == input$map_group)
-    kinds <- unique(df$value_kind)
+    kinds <- setdiff(unique(df$value_kind), "expected")
     kind_labels <- c(
       "Geobserveerd" = "observed",
-      "Verwacht op basis van leeftijd" = "expected",
       "Afwijking t.o.v. verwachting" = "ratio"
     )
     if (length(kinds) == 0) {
@@ -1537,7 +1535,7 @@ server <- function(input, output, session) {
   })
 
   map_joined <- reactive({
-    validate(need(!is.null(map_sf), "No map.gpkg was found, so the map cannot be drawn."))
+    validate(need(!is.null(map_sf), "map.gpkg is niet gevonden, dus de kaart kan niet worden getekend."))
     map_sf |>
       dplyr::left_join(map_selected_values(), by = "stadsdelen")
   })
@@ -1550,7 +1548,7 @@ server <- function(input, output, session) {
     selected_limits <- expand_equal_range(selected_values$masked_value)
     legend_title <- map_legend_title(input$map_family, input$map_value_kind)
 
-    validate(need(nrow(df_map) > 0, "No map data available for the current selection."))
+    validate(need(nrow(df_map) > 0, "Geen kaartgegevens beschikbaar voor de huidige selectie."))
 
     p <- ggplot(df_map) +
       geom_sf(aes(fill = masked_value), color = alpha("#415a77", 0.45), linewidth = 0.25)
