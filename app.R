@@ -570,7 +570,28 @@ make_line_only_legend <- function(plot_obj, order_mode = c("default", "sex_then_
     return(plot_obj)
   }
 
+  normalize_legend_label <- function(label) {
+    if (is.null(label) || !nzchar(label)) {
+      return(label)
+    }
+
+    label <- as.character(label)
+    if (grepl("^\\(.*\\)$", label)) {
+      label <- sub("^\\((.*)\\)$", "\\1", label)
+    }
+
+    if (grepl("^[^,]+,\\d+$", label)) {
+      label <- sub(",\\d+$", "", label)
+    }
+
+    label
+  }
+
   normalize_trace <- function(trace) {
+    trace$name <- normalize_legend_label(trace$name %||% "")
+    if (!is.null(trace$legendgroup) && nzchar(trace$legendgroup)) {
+      trace$legendgroup <- normalize_legend_label(trace$legendgroup)
+    }
     if ((is.null(trace$legendgroup) || !nzchar(trace$legendgroup)) &&
         !is.null(trace$name) && nzchar(trace$name)) {
       trace$legendgroup <- trace$name
@@ -711,6 +732,40 @@ build_event_study_annotations <- function(df) {
       font = list(size = 12, color = "#4b5563")
     )
   })
+}
+
+build_sex_annotations <- function(df) {
+  sexes <- ordered_sex_levels(df$geslacht)
+  sexes <- sexes[sexes %in% unique(as.character(df$geslacht))]
+  if (length(sexes) == 0) {
+    return(list())
+  }
+
+  row_text <- paste(
+    vapply(sexes, function(sex) {
+      color <- sex_palette[[sex]] %||% "#4b5563"
+      paste0(
+        "<span style='color:", color, ";'>&#9473;&#9473;&#9473;</span>",
+        "&nbsp;", sex
+      )
+    }, character(1)),
+    collapse = "&nbsp;&nbsp;&nbsp;&nbsp;"
+  )
+
+  list(
+    list(
+      x = 0,
+      y = -0.11,
+      xref = "paper",
+      yref = "paper",
+      xanchor = "left",
+      yanchor = "top",
+      align = "left",
+      showarrow = FALSE,
+      text = row_text,
+      font = list(size = 12, color = "#4b5563")
+    )
+  )
 }
 
 load_map_sf <- function(path) {
@@ -1209,6 +1264,11 @@ server <- function(input, output, session) {
     df <- year_filtered()
     validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- yearly_index[yearly_index$sheet == input$year_sheet, , drop = FALSE]
+    custom_annotations <- build_event_study_annotations(df)
+    if (length(custom_annotations) == 0) {
+      custom_annotations <- build_sex_annotations(df)
+    }
+    bottom_margin <- if (length(custom_annotations) > 1) 115 else 90
 
     p <- build_time_series_plot(
       df = df,
@@ -1223,14 +1283,10 @@ server <- function(input, output, session) {
     )
 
     plotly::ggplotly(p, tooltip = "text") |>
-      make_line_only_legend() |>
       plotly::layout(
-        legend = list(
-          orientation = "h",
-          x = 0,
-          xanchor = "left",
-          y = -0.2
-        )
+        showlegend = FALSE,
+        annotations = custom_annotations,
+        margin = list(b = bottom_margin)
       )
   })
 
