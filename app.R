@@ -1035,6 +1035,12 @@ ui <- navbarPage(
         selectInput("year_type", "Statistiek", choices = NULL),
         checkboxGroupInput("year_sex", "Geslacht", choices = NULL),
         checkboxGroupInput("year_region", "Gebied", choices = NULL),
+        checkboxGroupInput(
+          "year_include_zero",
+          "Nul op y-as opnemen",
+          choices = c("Ja" = "yes"),
+          selected = "yes"
+        ),
         uiOutput("year_condition_ui")
       ),
       mainPanel(
@@ -1061,6 +1067,12 @@ ui <- navbarPage(
               selectInput("es_mean_type", "Statistiek", choices = NULL),
               checkboxGroupInput("es_mean_sex", "Geslacht", choices = NULL),
               checkboxGroupInput("es_mean_region", "Gebied", choices = NULL),
+              checkboxGroupInput(
+                "es_mean_include_zero",
+                "Nul op y-as opnemen",
+                choices = c("Ja" = "yes"),
+                selected = "yes"
+              ),
               uiOutput("es_mean_condition_ui")
             ),
             mainPanel(
@@ -1279,7 +1291,7 @@ server <- function(input, output, session) {
       facet_var = "amsterdam",
       compact_facets = TRUE,
       show_confidence = TRUE,
-      include_zero = TRUE
+      include_zero = "yes" %in% (input$year_include_zero %||% character(0))
     )
 
     plotly::ggplotly(p, tooltip = "text") |>
@@ -1409,7 +1421,7 @@ server <- function(input, output, session) {
       vline = 0,
       facet_var = "amsterdam",
       compact_facets = TRUE,
-      include_zero = TRUE
+      include_zero = "yes" %in% (input$es_mean_include_zero %||% character(0))
     )
 
     plotly::ggplotly(p, tooltip = "text") |>
