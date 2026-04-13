@@ -1145,7 +1145,8 @@ ui <- navbarPage(
           selected = "10"
         ),
         checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = FALSE),
-        checkboxInput("map_fixed_legend", "Legenda per uitkomstgroep vastzetten", value = TRUE),
+        checkboxInput("map_fixed_legend", "Legenda voor gekozen uitkomst vastzetten", value = TRUE),
+        uiOutput("map_ratio_scale_ui"),
         checkboxInput("map_show_labels", "Labels van stadsdelen tonen", value = TRUE),
         downloadButton("dl_map", "Kaart downloaden")
       ),
@@ -1660,6 +1661,25 @@ server <- function(input, output, session) {
     )
   })
 
+  output$map_ratio_scale_ui <- renderUI({
+    if (!identical(input$map_value_kind, "ratio")) {
+      return(NULL)
+    }
+
+    tagList(
+      checkboxInput("map_manual_ratio_scale", "Afwijkingsschaal handmatig instellen", value = FALSE),
+      if (isTRUE(input$map_manual_ratio_scale)) {
+        tagList(
+          helpText("Midden blijft altijd 1 (wit)."),
+          fluidRow(
+            column(6, numericInput("map_ratio_min", "Min", value = 0.9, step = 0.01)),
+            column(6, numericInput("map_ratio_max", "Max", value = 1.1, step = 0.01))
+          )
+        )
+      }
+    )
+  })
+
   observeEvent(input$map_group, {
     df <- map_long |>
       dplyr::filter(group_key == input$map_group)
@@ -1673,10 +1693,14 @@ server <- function(input, output, session) {
       return()
     }
     available_kind_choices <- kind_labels[match(kinds, unname(kind_labels))]
+    selected_kind <- input$map_value_kind
+    if (is.null(selected_kind) || !nzchar(selected_kind) || !(selected_kind %in% kinds)) {
+      selected_kind <- kinds[[1]]
+    }
     updateSelectInput(
       session, "map_value_kind",
       choices = available_kind_choices,
-      selected = kinds[[1]]
+      selected = selected_kind
     )
   }, ignoreNULL = FALSE)
 
@@ -1698,10 +1722,15 @@ server <- function(input, output, session) {
       return()
     }
 
+    selected_family <- input$map_family
+    if (is.null(selected_family) || !nzchar(selected_family) || !(selected_family %in% families$family_key)) {
+      selected_family <- families$family_key[[1]]
+    }
+
     updateSelectInput(
       session, "map_family",
       choices = stats::setNames(families$family_key, families$family_label),
-      selected = families$family_key[[1]]
+      selected = selected_family
     )
   }, ignoreNULL = FALSE)
 
@@ -1727,10 +1756,15 @@ server <- function(input, output, session) {
       return()
     }
 
+    selected_outcome <- input$map_outcome
+    if (is.null(selected_outcome) || !nzchar(selected_outcome) || !(selected_outcome %in% outcomes$outcome_key)) {
+      selected_outcome <- outcomes$outcome_key[[1]]
+    }
+
     updateSelectInput(
       session, "map_outcome",
       choices = stats::setNames(outcomes$outcome_key, outcomes$outcome_label),
-      selected = outcomes$outcome_key[[1]]
+      selected = selected_outcome
     )
   }, ignoreNULL = FALSE)
 
@@ -1758,13 +1792,14 @@ server <- function(input, output, session) {
   })
 
   map_scale_source <- reactive({
-    req(input$map_group, input$map_value_kind, input$map_family)
+    req(input$map_group, input$map_value_kind, input$map_family, input$map_outcome)
     min_count <- parse_map_min_count(input$map_min_count)
     df <- map_long |>
       dplyr::filter(
         group_key == input$map_group,
         value_kind == input$map_value_kind,
-        family_key == input$map_family
+        family_key == input$map_family,
+        outcome_key == input$map_outcome
       )
 
     apply_map_masks(
@@ -1787,6 +1822,16 @@ server <- function(input, output, session) {
     scale_limits <- expand_equal_range(scale_values)
     selected_limits <- expand_equal_range(selected_values$masked_value)
     legend_title <- map_legend_title(input$map_family, input$map_value_kind)
+    manual_ratio_limits <- NULL
+
+    if (identical(input$map_value_kind, "ratio") && isTRUE(input$map_manual_ratio_scale)) {
+      min_value <- suppressWarnings(as.numeric(input$map_ratio_min))
+      max_value <- suppressWarnings(as.numeric(input$map_ratio_max))
+      validate(need(is.finite(min_value) && is.finite(max_value), "Vul geldige waarden in voor min en max."))
+      validate(need(min_value < max_value, "Min moet kleiner zijn dan max."))
+      validate(need(min_value < 1 && max_value > 1, "Kies min < 1 en max > 1 zodat wit gelijk blijft aan 1."))
+      manual_ratio_limits <- c(min_value, max_value)
+    }
 
     validate(need(nrow(df_map) > 0, "Geen kaartgegevens beschikbaar voor de huidige selectie."))
 
@@ -1799,13 +1844,14 @@ server <- function(input, output, session) {
     }
 
     if (identical(input$map_value_kind, "ratio")) {
+      ratio_limits <- manual_ratio_limits %||% if (isTRUE(input$map_fixed_legend)) scale_limits else NULL
       p <- p +
         scale_fill_gradient2(
           low = "darkslateblue",
           mid = "white",
           high = "red",
           midpoint = 1,
-          limits = if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
+          limits = ratio_limits,
           na.value = "lightgrey",
           name = legend_title
         )
