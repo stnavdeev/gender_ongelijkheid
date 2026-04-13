@@ -452,18 +452,49 @@ prepare_time_series_aesthetics <- function(df, condition_col = NA_character_, co
   df
 }
 
-build_time_series_plot <- function(df, x_var, title, subtitle, y_labeler, vline = NULL, facet_var = NULL, compact_facets = FALSE) {
+build_time_series_plot <- function(
+  df,
+  x_var,
+  title,
+  subtitle,
+  y_labeler,
+  vline = NULL,
+  facet_var = NULL,
+  compact_facets = FALSE,
+  show_confidence = FALSE,
+  include_zero = FALSE
+) {
   color_col <- if ("color_value" %in% names(df)) "color_value" else "series"
   group_col <- if ("plot_group" %in% names(df)) "plot_group" else color_col
   has_linetype <- "linetype_value" %in% names(df) && dplyr::n_distinct(df$linetype_value) > 1
+  has_confidence <- isTRUE(show_confidence) && "se" %in% names(df) && any(is.finite(df$se))
   color_levels <- if (is.factor(df[[color_col]])) levels(df[[color_col]]) else unique(as.character(df[[color_col]]))
   color_levels <- color_levels[color_levels %in% unique(as.character(df[[color_col]]))]
   palette_values <- palette_for_values(color_levels)
+
+  if (has_confidence) {
+    df <- df |>
+      dplyr::mutate(
+        ci_low = value - 1.96 * se,
+        ci_high = value + 1.96 * se
+      )
+  }
+
   df$tooltip <- paste0(
     "Reeks: ", df$series, "<br>",
     if (identical(x_var, "year")) "Jaar" else "Jaren sinds diagnose", ": ", df[[x_var]], "<br>",
     "Waarde: ", y_labeler(df$value)
   )
+
+  if (has_confidence) {
+    df$tooltip <- paste0(
+      df$tooltip,
+      "<br>95%-BI: ",
+      y_labeler(df$ci_low),
+      " tot ",
+      y_labeler(df$ci_high)
+    )
+  }
 
   p <- ggplot(df, aes(
     x = .data[[x_var]],
@@ -472,6 +503,24 @@ build_time_series_plot <- function(df, x_var, title, subtitle, y_labeler, vline 
     group = .data[[group_col]],
     text = tooltip
   ))
+
+  if (has_confidence) {
+    p <- p +
+      geom_ribbon(
+        data = df,
+        aes(
+          x = .data[[x_var]],
+          ymin = ci_low,
+          ymax = ci_high,
+          fill = .data[[color_col]],
+          group = .data[[group_col]]
+        ),
+        inherit.aes = FALSE,
+        alpha = 0.12,
+        color = NA,
+        show.legend = FALSE
+      )
+  }
 
   if (has_linetype) {
     linetype_levels <- if (is.factor(df$linetype_value)) levels(df$linetype_value) else unique(as.character(df$linetype_value))
@@ -488,10 +537,15 @@ build_time_series_plot <- function(df, x_var, title, subtitle, y_labeler, vline 
 
   p <- p +
     scale_color_manual(values = palette_values) +
+    {if (has_confidence) scale_fill_manual(values = palette_values, guide = "none")} +
     scale_x_continuous(breaks = sort(unique(df[[x_var]]))) +
     scale_y_continuous(labels = y_labeler) +
     labs(title = title, subtitle = subtitle, color = NULL, linetype = NULL) +
     theme_dashboard()
+
+  if (isTRUE(include_zero)) {
+    p <- p + expand_limits(y = 0)
+  }
 
   if (!is.null(vline)) {
     p <- p + geom_vline(xintercept = vline, color = "#b0145b", linetype = "dashed", linewidth = 0.7)
@@ -781,6 +835,118 @@ map_legend_title <- function(family_key, value_kind) {
   "Aantal"
 }
 
+format_map_tooltip_value <- function(value, family_key, value_kind) {
+  if (!is.finite(value)) {
+    return("Geen waarde beschikbaar")
+  }
+
+  if (identical(value_kind, "ratio")) {
+    return(scales::number(value, accuracy = 0.01, big.mark = ".", decimal.mark = ","))
+  }
+
+  if (identical(family_key, "heeft")) {
+    return(paste0(scales::number(value, accuracy = 0.1, big.mark = ".", decimal.mark = ","), "%"))
+  }
+
+  scales::number(value, accuracy = 1, big.mark = ".", decimal.mark = ",")
+}
+
+map_numeric_vector <- function(x) {
+  if (is.list(x)) {
+    return(vapply(x, function(item) {
+      item <- unlist(item, recursive = TRUE, use.names = FALSE)
+      if (length(item) == 0) {
+        return(NA_real_)
+      }
+      suppressWarnings(as.numeric(item[[1]]))
+    }, numeric(1)))
+  }
+
+  suppressWarnings(as.numeric(x))
+}
+
+map_character_vector <- function(x) {
+  if (is.list(x)) {
+    return(vapply(x, function(item) {
+      item <- unlist(item, recursive = TRUE, use.names = FALSE)
+      if (length(item) == 0) {
+        return(NA_character_)
+      }
+      as.character(item[[1]])
+    }, character(1)))
+  }
+
+  as.character(x)
+}
+
+parse_map_min_count <- function(value) {
+  if (is.null(value) || !nzchar(value)) {
+    return(NA_real_)
+  }
+  suppressWarnings(as.numeric(value))
+}
+
+apply_map_masks <- function(df, exclude_westpoort = FALSE, min_count = NA_real_) {
+  count_values <- map_numeric_vector(df$count)
+  display_values <- map_numeric_vector(df$display_value)
+  stadsdelen_values <- map_character_vector(df$stadsdelen)
+
+  df |>
+    dplyr::mutate(
+      masked_value = dplyr::case_when(
+        isTRUE(exclude_westpoort) & stadsdelen_values == "B Westpoort" ~ NA_real_,
+        is.finite(min_count) & !is.na(count_values) & count_values < min_count ~ NA_real_,
+        TRUE ~ display_values
+      )
+    )
+}
+
+build_map_tooltip <- function(df_map, exclude_westpoort = FALSE, min_count = NA_real_) {
+  stadsdelen_values <- map_character_vector(df_map$stadsdelen)
+  sex_values <- map_character_vector(df_map$geslacht)
+  count_values <- map_numeric_vector(df_map$count)
+  masked_values <- map_numeric_vector(df_map$masked_value)
+  family_values <- map_character_vector(df_map$family_key)
+  kind_values <- map_character_vector(df_map$value_kind)
+
+  value_text <- vapply(seq_len(nrow(df_map)), function(i) {
+    if (isTRUE(exclude_westpoort) && identical(stadsdelen_values[[i]], "B Westpoort")) {
+      return("Uitgesloten")
+    }
+
+    if (is.finite(min_count) && !is.na(count_values[[i]]) && count_values[[i]] < min_count) {
+      return(paste0("Verborgen (n < ", min_count, ")"))
+    }
+
+    format_map_tooltip_value(
+      value = masked_values[[i]],
+      family_key = family_values[[i]],
+      value_kind = kind_values[[i]]
+    )
+  }, character(1))
+
+  sex_text <- vapply(seq_along(sex_values), function(i) {
+    if (is.na(sex_values[[i]]) || !nzchar(sex_values[[i]])) {
+      return("")
+    }
+    paste0("<br>Geslacht: ", sex_values[[i]])
+  }, character(1))
+
+  count_text <- vapply(seq_along(count_values), function(i) {
+    if (is.na(count_values[[i]])) {
+      return("")
+    }
+    paste0("<br>n: ", scales::number(count_values[[i]], accuracy = 1, big.mark = ".", decimal.mark = ","))
+  }, character(1))
+
+  paste0(
+    "Stadsdeel: ", stadsdelen_values,
+    sex_text,
+    count_text,
+    "<br>Waarde: ", value_text
+  )
+}
+
 map_sf <- if (!is.na(map_path)) load_map_sf(map_path) else NULL
 
 map_long <- {
@@ -905,13 +1071,27 @@ ui <- navbarPage(
         selectInput("map_value_kind", "Kaarttype", choices = NULL),
         selectInput("map_family", "Uitkomstgroep", choices = NULL),
         selectInput("map_outcome", "Uitkomst", choices = NULL),
+        selectInput(
+          "map_min_count",
+          "Stadsdelen verbergen bij n kleiner dan",
+          choices = c("10" = "10", "30" = "30", "50" = "50"),
+          selected = "10"
+        ),
         checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = FALSE),
         checkboxInput("map_fixed_legend", "Legenda per uitkomstgroep vastzetten", value = TRUE),
         checkboxInput("map_show_labels", "Labels van stadsdelen tonen", value = TRUE),
         downloadButton("dl_map", "Kaart downloaden")
       ),
       mainPanel(
-        plotOutput("plot_map", height = "700px"),
+        tags$div(
+          style = "position: relative;",
+          plotOutput(
+            "plot_map",
+            height = "700px",
+            hover = hoverOpts("plot_map_hover", delay = 100, delayType = "debounce")
+          ),
+          uiOutput("plot_map_hover_ui")
+        ),
         DTOutput("tbl_map")
       )
     )
@@ -1037,7 +1217,9 @@ server <- function(input, output, session) {
       subtitle = paste(pretty_metric_name(input$year_outcome), "|", pretty_type(input$year_type)),
       y_labeler = metric_labeler(input$year_outcome, input$year_type),
       facet_var = "amsterdam",
-      compact_facets = TRUE
+      compact_facets = TRUE,
+      show_confidence = TRUE,
+      include_zero = TRUE
     )
 
     plotly::ggplotly(p, tooltip = "text") |>
@@ -1170,7 +1352,8 @@ server <- function(input, output, session) {
       y_labeler = metric_labeler(input$es_mean_outcome, input$es_mean_type),
       vline = 0,
       facet_var = "amsterdam",
-      compact_facets = TRUE
+      compact_facets = TRUE,
+      include_zero = TRUE
     )
 
     plotly::ggplotly(p, tooltip = "text") |>
@@ -1485,6 +1668,7 @@ server <- function(input, output, session) {
 
   map_selected_values <- reactive({
     req(input$map_group, input$map_value_kind, input$map_family, input$map_outcome)
+    min_count <- parse_map_min_count(input$map_min_count)
     df <- map_long |>
       dplyr::filter(
         group_key == input$map_group,
@@ -1498,18 +1682,16 @@ server <- function(input, output, session) {
         dplyr::filter(geslacht == (input$map_sex %||% unique(df$geslacht)[1]))
     }
 
-    df |>
-      dplyr::mutate(
-        masked_value = dplyr::if_else(
-          isTRUE(input$map_exclude_westpoort) & stadsdelen == "B Westpoort",
-          NA_real_,
-          display_value
-        )
-      )
+    apply_map_masks(
+      df,
+      exclude_westpoort = isTRUE(input$map_exclude_westpoort),
+      min_count = min_count
+    )
   })
 
   map_scale_source <- reactive({
     req(input$map_group, input$map_value_kind, input$map_family)
+    min_count <- parse_map_min_count(input$map_min_count)
     df <- map_long |>
       dplyr::filter(
         group_key == input$map_group,
@@ -1517,14 +1699,11 @@ server <- function(input, output, session) {
         family_key == input$map_family
       )
 
-    df |>
-      dplyr::mutate(
-        masked_value = dplyr::if_else(
-          isTRUE(input$map_exclude_westpoort) & stadsdelen == "B Westpoort",
-          NA_real_,
-          display_value
-        )
-      )
+    apply_map_masks(
+      df,
+      exclude_westpoort = isTRUE(input$map_exclude_westpoort),
+      min_count = min_count
+    )
   })
 
   map_joined <- reactive({
@@ -1605,6 +1784,58 @@ server <- function(input, output, session) {
   output$plot_map <- renderPlot({
     map_plot_obj()
   }, res = 110)
+
+  map_hovered_row <- reactive({
+    hover <- input$plot_map_hover
+    req(hover$x, hover$y)
+    df_map <- map_joined()
+    point_sf <- sf::st_sfc(
+      sf::st_point(c(hover$x, hover$y)),
+      crs = sf::st_crs(df_map)
+    )
+    hit_index <- which(as.vector(sf::st_intersects(df_map, point_sf, sparse = FALSE)))
+    if (length(hit_index) == 0) {
+      return(NULL)
+    }
+    df_map[hit_index[[1]], , drop = FALSE]
+  })
+
+  output$plot_map_hover_ui <- renderUI({
+    hover <- input$plot_map_hover
+    row <- map_hovered_row()
+    if (is.null(hover) || is.null(row)) {
+      return(NULL)
+    }
+
+    min_count <- parse_map_min_count(input$map_min_count)
+    tooltip_html <- build_map_tooltip(
+      sf::st_drop_geometry(row),
+      exclude_westpoort = isTRUE(input$map_exclude_westpoort),
+      min_count = min_count
+    )[[1]]
+
+    left_pos <- hover$coords_css$x + 15
+    top_pos <- hover$coords_css$y + 15
+
+    tags$div(
+      style = paste(
+        "position:absolute;",
+        sprintf("left:%spx;", left_pos),
+        sprintf("top:%spx;", top_pos),
+        "max-width:240px;",
+        "padding:10px 12px;",
+        "background:rgba(255,255,255,0.96);",
+        "border:1px solid #cfd8df;",
+        "border-radius:6px;",
+        "box-shadow:0 2px 10px rgba(0,0,0,0.12);",
+        "pointer-events:none;",
+        "font-size:13px;",
+        "line-height:1.4;",
+        "z-index:20;"
+      ),
+      HTML(tooltip_html)
+    )
+  })
 
   output$dl_map <- downloadHandler(
     filename = function() {
