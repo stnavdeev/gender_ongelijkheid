@@ -362,7 +362,7 @@ display_table <- function(df) {
     extensions = "Buttons",
     options = list(
       dom = "Bfrtip",
-      buttons = c("excel"),
+      buttons = list(list(extend = "excel", text = "Gegevens downloaden")),
       pageLength = 10,
       scrollX = TRUE
     )
