@@ -1147,6 +1147,25 @@ ui <- navbarPage(
         checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = FALSE),
         checkboxInput("map_fixed_legend", "Legenda voor gekozen uitkomst vastzetten", value = TRUE),
         checkboxInput("map_show_labels", "Labels van stadsdelen tonen", value = TRUE),
+        conditionalPanel(
+          condition = "input.map_value_kind == 'ratio' || input.map_value_kind == 'observed'",
+          checkboxInput("map_manual_scale", "Kaartschaal handmatig instellen", value = FALSE),
+          conditionalPanel(
+            condition = "input.map_manual_scale",
+            conditionalPanel(
+              condition = "input.map_value_kind == 'ratio'",
+              helpText("Midden blijft altijd 1 (wit).")
+            ),
+            conditionalPanel(
+              condition = "input.map_value_kind == 'observed'",
+              helpText("Min is wit en max is donkerroze.")
+            ),
+            fluidRow(
+              column(6, numericInput("map_scale_min", "Min", value = 0.9, step = 0.01)),
+              column(6, numericInput("map_scale_max", "Max", value = 1.1, step = 0.01))
+            )
+          )
+        ),
         downloadButton("dl_map", "Kaart downloaden")
       ),
       mainPanel(
@@ -1789,6 +1808,47 @@ server <- function(input, output, session) {
     )
   })
 
+  map_prefill_scale_limits <- reactive({
+    req(input$map_value_kind)
+    values <- if (isTRUE(input$map_fixed_legend)) map_scale_source()$masked_value else map_selected_values()$masked_value
+    limits <- expand_equal_range(values)
+
+    if (identical(input$map_value_kind, "ratio")) {
+      limits[[1]] <- min(limits[[1]], 0.99)
+      limits[[2]] <- max(limits[[2]], 1.01)
+      if (limits[[1]] >= 1) {
+        limits[[1]] <- 0.99
+      }
+      if (limits[[2]] <= 1) {
+        limits[[2]] <- 1.01
+      }
+    }
+
+    limits
+  })
+
+  observeEvent(
+    list(
+      input$map_group,
+      input$map_value_kind,
+      input$map_family,
+      input$map_outcome,
+      input$map_sex,
+      input$map_fixed_legend,
+      input$map_min_count,
+      input$map_exclude_westpoort
+    ),
+    {
+      req(input$map_value_kind %in% c("observed", "ratio"))
+      limits <- map_prefill_scale_limits()
+      step_value <- if (identical(input$map_value_kind, "ratio")) 0.01 else 0.1
+
+      updateNumericInput(session, "map_scale_min", value = signif(limits[[1]], 4), step = step_value)
+      updateNumericInput(session, "map_scale_max", value = signif(limits[[2]], 4), step = step_value)
+    },
+    ignoreNULL = FALSE
+  )
+
   map_joined <- reactive({
     validate(need(!is.null(map_sf), "map.gpkg is niet gevonden, dus de kaart kan niet worden getekend."))
     map_sf |>
@@ -1802,6 +1862,24 @@ server <- function(input, output, session) {
     scale_limits <- expand_equal_range(scale_values)
     selected_limits <- expand_equal_range(selected_values$masked_value)
     legend_title <- map_legend_title(input$map_family, input$map_value_kind)
+    manual_scale_limits <- NULL
+
+    if (identical(input$map_value_kind, "ratio") && isTRUE(input$map_manual_scale)) {
+      min_value <- suppressWarnings(as.numeric(input$map_scale_min))
+      max_value <- suppressWarnings(as.numeric(input$map_scale_max))
+      validate(need(is.finite(min_value) && is.finite(max_value), "Vul geldige waarden in voor min en max."))
+      validate(need(min_value < max_value, "Min moet kleiner zijn dan max."))
+      validate(need(min_value < 1 && max_value > 1, "Kies min < 1 en max > 1 zodat wit gelijk blijft aan 1."))
+      manual_scale_limits <- c(min_value, max_value)
+    }
+
+    if (identical(input$map_value_kind, "observed") && isTRUE(input$map_manual_scale)) {
+      min_value <- suppressWarnings(as.numeric(input$map_scale_min))
+      max_value <- suppressWarnings(as.numeric(input$map_scale_max))
+      validate(need(is.finite(min_value) && is.finite(max_value), "Vul geldige waarden in voor min en max."))
+      validate(need(min_value < max_value, "Min moet kleiner zijn dan max."))
+      manual_scale_limits <- c(min_value, max_value)
+    }
 
     validate(need(nrow(df_map) > 0, "Geen kaartgegevens beschikbaar voor de huidige selectie."))
 
@@ -1820,7 +1898,7 @@ server <- function(input, output, session) {
           mid = "white",
           high = "red",
           midpoint = 1,
-          limits = if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
+          limits = manual_scale_limits %||% if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
           na.value = "lightgrey",
           name = legend_title
         )
@@ -1830,8 +1908,8 @@ server <- function(input, output, session) {
           low = "white",
           mid = "white",
           high = "deeppink4",
-          midpoint = if (isTRUE(input$map_fixed_legend)) scale_limits[[1]] else selected_limits[[1]],
-          limits = if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
+          midpoint = if (!is.null(manual_scale_limits)) manual_scale_limits[[1]] else if (isTRUE(input$map_fixed_legend)) scale_limits[[1]] else selected_limits[[1]],
+          limits = manual_scale_limits %||% if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
           na.value = "lightgrey",
           name = legend_title
         )
