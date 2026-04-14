@@ -219,6 +219,12 @@ sanitize_filename <- function(x) {
   gsub("[^A-Za-z0-9_-]+", "_", x)
 }
 
+build_export_name <- function(...) {
+  parts <- c(...)
+  parts <- parts[!is.na(parts) & nzchar(parts)]
+  sanitize_filename(paste(parts, collapse = "_"))
+}
+
 format_script_goal <- function(path) {
   lines <- readLines(path, warn = FALSE, n = 12)
   goal_line <- lines[stringr::str_detect(lines, "^# Goal:")]
@@ -354,19 +360,30 @@ metric_labeler <- function(metric_name, stat_type = NA_character_) {
   scales::label_number(big.mark = ".", decimal.mark = ",")
 }
 
-display_table <- function(df) {
-  DT::datatable(
-    df,
+display_table <- function(df, export_name = "gegevens", show_excel = TRUE) {
+  table_options <- list(
+    dom = if (isTRUE(show_excel)) "Bfrtip" else "frtip",
+    buttons = if (isTRUE(show_excel)) list(list(
+      extend = "excel",
+      text = "Gegevens downloaden",
+      filename = export_name
+    )) else list(),
+    pageLength = 10,
+    scrollX = TRUE
+  )
+
+  table_args <- list(
+    data = df,
     rownames = FALSE,
     filter = "top",
-    extensions = "Buttons",
-    options = list(
-      dom = "Bfrtip",
-      buttons = list(list(extend = "excel", text = "Gegevens downloaden")),
-      pageLength = 10,
-      scrollX = TRUE
-    )
+    options = table_options
   )
+
+  if (isTRUE(show_excel)) {
+    table_args$extensions <- "Buttons"
+  }
+
+  do.call(DT::datatable, table_args)
 }
 
 build_palette <- function(n) {
@@ -1186,11 +1203,14 @@ ui <- navbarPage(
 
 server <- function(input, output, session) {
   output$tbl_scripts <- renderDT({
-    display_table(script_index)
+    display_table(script_index, export_name = "code_overzicht")
   })
 
   output$tbl_sheets <- renderDT({
-    display_table(data.frame(sheet = sheet_names, stringsAsFactors = FALSE))
+    display_table(
+      data.frame(sheet = sheet_names, stringsAsFactors = FALSE),
+      export_name = "werkbladen_output_xlsx"
+    )
   })
 
   observeEvent(input$year_sheet, {
@@ -1323,7 +1343,15 @@ server <- function(input, output, session) {
 
   output$tbl_year <- renderDT({
     df <- year_filtered()
-    display_table(df)
+    display_table(
+      df,
+      export_name = build_export_name(
+        "jaarlijkse_trends",
+        input$year_sheet %||% "dataset",
+        input$year_outcome %||% "uitkomst",
+        input$year_type %||% "statistiek"
+      )
+    )
   })
 
   observeEvent(input$es_mean_sheet, {
@@ -1458,7 +1486,15 @@ server <- function(input, output, session) {
   })
 
   output$tbl_es_mean <- renderDT({
-    display_table(es_mean_filtered())
+    display_table(
+      es_mean_filtered(),
+      export_name = build_export_name(
+        "event_study_geobserveerde_gemiddelden",
+        input$es_mean_sheet %||% "dataset",
+        input$es_mean_outcome %||% "uitkomst",
+        input$es_mean_type %||% "statistiek"
+      )
+    )
   })
 
   observeEvent(input$es_ci_sheet, {
@@ -1548,7 +1584,14 @@ server <- function(input, output, session) {
   })
 
   output$tbl_es_ci <- renderDT({
-    display_table(es_ci_filtered())
+    display_table(
+      es_ci_filtered(),
+      export_name = build_export_name(
+        "event_study_geschatte_effecten",
+        input$es_ci_sheet %||% "dataset",
+        input$es_ci_outcome %||% "uitkomst"
+      )
+    )
   })
 
   observeEvent(input$profile_sheet, {
@@ -1655,7 +1698,14 @@ server <- function(input, output, session) {
   })
 
   output$tbl_profile <- renderDT({
-    display_table(profile_filtered())
+    display_table(
+      profile_filtered(),
+      export_name = build_export_name(
+        "profielen",
+        input$profile_sheet %||% "dataset",
+        input$profile_category %||% "categorie"
+      )
+    )
   })
 
   output$map_sex_ui <- renderUI({
@@ -2028,7 +2078,15 @@ server <- function(input, output, session) {
         display_value,
         masked_value
       )
-    display_table(df)
+    display_table(
+      df,
+      export_name = build_export_name(
+        "kaartgegevens",
+        input$map_outcome %||% "uitkomst",
+        input$map_value_kind %||% "type",
+        if (identical(input$map_group, "sex")) input$map_sex %||% "sex" else "total"
+      )
+    )
   })
 }
 
