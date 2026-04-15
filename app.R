@@ -1,5 +1,6 @@
 packages <- c(
   "shiny",
+  "shinyWidgets",
   "openxlsx",
   "dplyr",
   "tidyr",
@@ -253,38 +254,29 @@ normalize_hex_color <- function(value, fallback) {
 }
 
 color_picker_input <- function(id, label, value) {
-  tags$div(
-    style = "margin-bottom: 12px;",
-    tags$label(`for` = id, style = "display:block; font-weight:600; margin-bottom:4px;", label),
-    tags$div(
-      style = "display:flex; gap:10px; align-items:center;",
-      tags$input(
-        id = id,
-        type = "text",
-        value = value,
-        class = "form-control",
-        style = "flex:1 1 auto; font-family:monospace; font-size:16px; height:44px;",
-        placeholder = "#RRGGBB",
-        oninput = sprintf("
-          var picker = document.getElementById('%s_picker');
-          if (/^#[0-9A-Fa-f]{6}$/.test(this.value)) {
-            picker.value = this.value;
-          }
-        ", id)
-      ),
-      tags$input(
-        id = paste0(id, "_picker"),
-        type = "color",
-        value = value,
-        style = "width:56px; height:44px; padding:2px; border:1px solid #d1d5db; border-radius:6px; background:#ffffff; cursor:pointer; flex:0 0 auto;",
-        oninput = sprintf("
-          var text = document.getElementById('%s');
-          text.value = this.value.toUpperCase();
-          text.dispatchEvent(new Event('input', {bubbles: true}));
-          text.dispatchEvent(new Event('change', {bubbles: true}));
-        ", id)
-      )
-    )
+  shinyWidgets::colorPickr(
+    inputId = id,
+    label = label,
+    selected = value,
+    swatches = NULL,
+    preview = FALSE,
+    hue = TRUE,
+    opacity = FALSE,
+    interaction = list(
+      cancel = FALSE,
+      clear = FALSE,
+      save = FALSE,
+      hex = FALSE,
+      rgba = FALSE,
+      input = FALSE
+    ),
+    theme = "classic",
+    update = "changestop",
+    position = "bottom-middle",
+    hideOnSave = TRUE,
+    useAsButton = FALSE,
+    pickr_width = "240px",
+    width = "100%"
   )
 }
 
@@ -294,7 +286,8 @@ apply_plotly_transparent_layout <- function(plot_obj, ...) {
     paper_bgcolor = "rgba(0,0,0,0)",
     plot_bgcolor = "rgba(0,0,0,0)",
     ...
-  )
+  ) |>
+    plotly::config(displayModeBar = FALSE, displaylogo = FALSE)
 }
 
 format_script_goal <- function(path) {
@@ -1124,18 +1117,29 @@ ui <- navbarPage(
         .navbar-default .navbar-form,
         .container-fluid,
         .tab-content,
+        .navbar-header,
+        .navbar-nav,
+        .main-container,
         .well,
+        .row,
+        .col-sm-4,
+        .col-sm-8,
+        .col-sm-12,
+        .tab-pane,
+        .sidebarPanel,
+        .mainPanel,
         .dataTables_wrapper,
         table.dataTable,
         table.dataTable thead th,
         table.dataTable tbody td,
         table.dataTable tbody tr,
+        .panel,
         .js-plotly-plot .plot-container,
         .js-plotly-plot .svg-container,
         .shiny-plot-output,
         .plot-container {
-          background: transparent !important;
-          background-color: transparent !important;
+          background: #ffffff !important;
+          background-color: #ffffff !important;
         }
 
         .well {
@@ -1395,6 +1399,14 @@ server <- function(input, output, session) {
       bg = "transparent"
     )
   }
+
+  map_color_values <- shiny::debounce(reactive({
+    list(
+      observed_high = normalize_hex_color(input$map_observed_high_color, "#8B0A50"),
+      ratio_low = normalize_hex_color(input$map_ratio_low_color, "#483D8B"),
+      ratio_high = normalize_hex_color(input$map_ratio_high_color, "#FF0000")
+    )
+  }), millis = 100)
 
   output$tbl_scripts <- renderDT({
     display_table(script_index, export_name = "code_overzicht")
@@ -2212,9 +2224,10 @@ server <- function(input, output, session) {
     scale_limits <- expand_equal_range(scale_values)
     selected_limits <- expand_equal_range(selected_values$masked_value)
     legend_title <- map_legend_title(input$map_family, input$map_value_kind)
-    observed_high_color <- normalize_hex_color(input$map_observed_high_color, "#8B0A50")
-    ratio_low_color <- normalize_hex_color(input$map_ratio_low_color, "#483D8B")
-    ratio_high_color <- normalize_hex_color(input$map_ratio_high_color, "#FF0000")
+    map_colors <- map_color_values()
+    observed_high_color <- map_colors$observed_high
+    ratio_low_color <- map_colors$ratio_low
+    ratio_high_color <- map_colors$ratio_high
     manual_scale_limits <- NULL
 
     if (identical(input$map_value_kind, "ratio") && isTRUE(input$map_manual_scale)) {
