@@ -225,6 +225,78 @@ build_export_name <- function(...) {
   sanitize_filename(paste(parts, collapse = "_"))
 }
 
+choose_preferred_choice <- function(choices, current = NULL, fallback = NULL) {
+  choices <- unique(as.character(choices))
+  if (length(choices) == 0) {
+    return(character(0))
+  }
+  if (!is.null(current) && nzchar(current) && current %in% choices) {
+    return(current)
+  }
+  if (!is.null(fallback) && nzchar(fallback) && fallback %in% choices) {
+    return(fallback)
+  }
+  choices[[1]]
+}
+
+normalize_hex_color <- function(value, fallback) {
+  if (is.null(value) || !nzchar(value)) {
+    return(fallback)
+  }
+
+  value <- as.character(value)[[1]]
+  if (!grepl("^#[0-9A-Fa-f]{6}$", value)) {
+    return(fallback)
+  }
+
+  value
+}
+
+color_picker_input <- function(id, label, value) {
+  tags$div(
+    style = "margin-bottom: 12px;",
+    tags$label(`for` = id, style = "display:block; font-weight:600; margin-bottom:4px;", label),
+    tags$div(
+      style = "display:flex; gap:10px; align-items:center;",
+      tags$input(
+        id = id,
+        type = "text",
+        value = value,
+        class = "form-control",
+        style = "flex:1 1 auto; font-family:monospace; font-size:16px; height:44px;",
+        placeholder = "#RRGGBB",
+        oninput = sprintf("
+          var picker = document.getElementById('%s_picker');
+          if (/^#[0-9A-Fa-f]{6}$/.test(this.value)) {
+            picker.value = this.value;
+          }
+        ", id)
+      ),
+      tags$input(
+        id = paste0(id, "_picker"),
+        type = "color",
+        value = value,
+        style = "width:56px; height:44px; padding:2px; border:1px solid #d1d5db; border-radius:6px; background:#ffffff; cursor:pointer; flex:0 0 auto;",
+        oninput = sprintf("
+          var text = document.getElementById('%s');
+          text.value = this.value.toUpperCase();
+          text.dispatchEvent(new Event('input', {bubbles: true}));
+          text.dispatchEvent(new Event('change', {bubbles: true}));
+        ", id)
+      )
+    )
+  )
+}
+
+apply_plotly_transparent_layout <- function(plot_obj, ...) {
+  plotly::layout(
+    plot_obj,
+    paper_bgcolor = "rgba(0,0,0,0)",
+    plot_bgcolor = "rgba(0,0,0,0)",
+    ...
+  )
+}
+
 format_script_goal <- function(path) {
   lines <- readLines(path, warn = FALSE, n = 12)
   goal_line <- lines[stringr::str_detect(lines, "^# Goal:")]
@@ -362,13 +434,14 @@ metric_labeler <- function(metric_name, stat_type = NA_character_) {
 
 display_table <- function(df, export_name = "gegevens", show_excel = TRUE) {
   table_options <- list(
-    dom = if (isTRUE(show_excel)) "Bfrtip" else "frtip",
+    dom = if (isTRUE(show_excel)) "Bfrt" else "frt",
     buttons = if (isTRUE(show_excel)) list(list(
       extend = "excel",
       text = "Gegevens downloaden",
-      filename = export_name
+      filename = export_name,
+      title = ""
     )) else list(),
-    pageLength = 10,
+    paging = FALSE,
     scrollX = TRUE
   )
 
@@ -403,6 +476,12 @@ theme_dashboard <- function() {
       panel.spacing.y = grid::unit(0.4, "lines"),
       legend.position = "bottom",
       legend.title = element_blank(),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      plot.background = element_rect(fill = "transparent", colour = NA),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      legend.key = element_rect(fill = "transparent", colour = NA),
+      strip.background = element_rect(fill = "transparent", colour = NA),
+      rect = element_rect(fill = "transparent", colour = NA),
       axis.title = element_blank(),
       axis.text.x = element_text(color = "#36454f"),
       axis.text.y = element_text(color = "#36454f")
@@ -855,7 +934,7 @@ build_map_long <- function(df, group_key) {
     if (!is.na(ratio_col) || !is.na(expected_col)) {
       ratio_row <- common
       ratio_row$value_kind <- "ratio"
-      ratio_row$value_label <- "Afwijking t.o.v. verwachting"
+      ratio_row$value_label <- "Index"
       if (!is.na(ratio_col)) {
         ratio_row$value <- as.numeric(df[[ratio_col]])
       } else {
@@ -896,10 +975,10 @@ expand_equal_range <- function(values) {
 
 map_legend_title <- function(family_key, value_kind) {
   if (value_kind == "ratio") {
-    return("Afwijking t.o.v. verwachting")
+    return("Index")
   }
   if (family_key == "heeft") {
-    return("Prevalentie (%)")
+    return("Gebruik")
   }
   if (family_key == "kosten") {
     return("Kosten")
@@ -1034,9 +1113,41 @@ map_long <- {
 ui <- navbarPage(
   title = "Ongelijkheid tussen mannen en vrouwen",
   id = "main_nav",
-  header = tags$div(
-    style = "padding: 12px 18px 4px 18px; color: #4b5563; font-size: 14px;",
-    "Interactieve tool voor het verkennen van verschillen tussen mannen en vrouwen in zorggebruik, zorgkosten en aandoeningsprevalentie in Amsterdam en Nederland."
+  header = tagList(
+    tags$head(
+      tags$style(HTML("
+        html,
+        body,
+        .navbar,
+        .navbar-default,
+        .navbar-default .navbar-collapse,
+        .navbar-default .navbar-form,
+        .container-fluid,
+        .tab-content,
+        .well,
+        .dataTables_wrapper,
+        table.dataTable,
+        table.dataTable thead th,
+        table.dataTable tbody td,
+        table.dataTable tbody tr,
+        .js-plotly-plot .plot-container,
+        .js-plotly-plot .svg-container,
+        .shiny-plot-output,
+        .plot-container {
+          background: transparent !important;
+          background-color: transparent !important;
+        }
+
+        .well {
+          border: none !important;
+          box-shadow: none !important;
+        }
+      "))
+    ),
+    tags$div(
+      style = "padding: 12px 18px 4px 18px; color: #4b5563; font-size: 14px;",
+      "Interactieve tool voor het verkennen van verschillen tussen mannen en vrouwen in zorggebruik, zorgkosten en aandoeningsprevalentie in Amsterdam en Nederland."
+    )
   ),
   tabPanel(
     "Jaarlijkse trends",
@@ -1058,7 +1169,8 @@ ui <- navbarPage(
           choices = c("Ja" = "yes"),
           selected = "yes"
         ),
-        uiOutput("year_condition_ui")
+        uiOutput("year_condition_ui"),
+        downloadButton("dl_year_plot", "Grafiek downloaden")
       ),
       mainPanel(
         plotly::plotlyOutput("plot_year", height = "520px"),
@@ -1090,7 +1202,8 @@ ui <- navbarPage(
                 choices = c("Ja" = "yes"),
                 selected = "yes"
               ),
-              uiOutput("es_mean_condition_ui")
+              uiOutput("es_mean_condition_ui"),
+              downloadButton("dl_es_mean_plot", "Grafiek downloaden")
             ),
             mainPanel(
               plotly::plotlyOutput("plot_es_mean", height = "520px"),
@@ -1110,7 +1223,8 @@ ui <- navbarPage(
               ),
               selectInput("es_ci_outcome", "Uitkomst", choices = NULL),
               checkboxGroupInput("es_ci_sex", "Geslacht", choices = NULL),
-              checkboxGroupInput("es_ci_sample", "Gebied", choices = NULL)
+              checkboxGroupInput("es_ci_sample", "Gebied", choices = NULL),
+              downloadButton("dl_es_ci_plot", "Grafiek downloaden")
             ),
             mainPanel(
               plotly::plotlyOutput("plot_es_ci", height = "520px"),
@@ -1133,7 +1247,8 @@ ui <- navbarPage(
         ),
         selectInput("profile_category", "Categorie", choices = NULL),
         checkboxGroupInput("profile_sex", "Geslacht", choices = NULL),
-        checkboxGroupInput("profile_region", "Gebied", choices = NULL)
+        checkboxGroupInput("profile_region", "Gebied", choices = NULL),
+        downloadButton("dl_profile_plot", "Grafiek downloaden")
       ),
       mainPanel(
         plotly::plotlyOutput("plot_profile", height = "560px"),
@@ -1155,6 +1270,27 @@ ui <- navbarPage(
         selectInput("map_value_kind", "Kaarttype", choices = NULL),
         selectInput("map_family", "Uitkomstgroep", choices = NULL),
         selectInput("map_outcome", "Uitkomst", choices = NULL),
+        conditionalPanel(
+          condition = "input.map_value_kind == 'observed'",
+          color_picker_input(
+            "map_observed_high_color",
+            "Selecteer kleur (hoogst)",
+            "#8B0A50"
+          )
+        ),
+        conditionalPanel(
+          condition = "input.map_value_kind == 'ratio'",
+          color_picker_input(
+            "map_ratio_low_color",
+            "Selecteer kleur (laagst)",
+            "#483D8B"
+          ),
+          color_picker_input(
+            "map_ratio_high_color",
+            "Selecteer kleur (hoogst)",
+            "#FF0000"
+          )
+        ),
         selectInput(
           "map_min_count",
           "Stadsdelen verbergen bij n kleiner dan",
@@ -1175,7 +1311,7 @@ ui <- navbarPage(
             ),
             conditionalPanel(
               condition = "input.map_value_kind == 'observed'",
-              helpText("Min is wit en max is donkerroze.")
+              helpText("Min is wit en max is de gekozen kleur.")
             ),
             fluidRow(
               column(6, numericInput("map_scale_min", "Min", value = 0.9, step = 0.01)),
@@ -1202,6 +1338,64 @@ ui <- navbarPage(
 )
 
 server <- function(input, output, session) {
+  shared_outcome_selection <- reactiveVal(NULL)
+
+  available_outcomes_for_input <- function(kind) {
+    if (identical(kind, "year")) {
+      req(input$year_sheet)
+      return(sort(unique(as.character(read_sheet_cached(input$year_sheet)$name))))
+    }
+    if (identical(kind, "es_mean")) {
+      req(input$es_mean_sheet)
+      return(sort(unique(as.character(read_sheet_cached(input$es_mean_sheet)$name))))
+    }
+    if (identical(kind, "es_ci")) {
+      req(input$es_ci_sheet)
+      return(sort(unique(as.character(read_sheet_cached(input$es_ci_sheet)$outcome))))
+    }
+    character(0)
+  }
+
+  sync_outcome_across_tabs <- function(source_kind, outcome_value) {
+    if (is.null(outcome_value) || !nzchar(outcome_value)) {
+      return()
+    }
+
+    shared_outcome_selection(outcome_value)
+
+    target_specs <- list(
+      year = "year_outcome",
+      es_mean = "es_mean_outcome",
+      es_ci = "es_ci_outcome"
+    )
+
+    for (kind in setdiff(names(target_specs), source_kind)) {
+      choices <- tryCatch(available_outcomes_for_input(kind), error = function(e) character(0))
+      if (!(outcome_value %in% choices)) {
+        next
+      }
+
+      input_id <- target_specs[[kind]]
+      if (identical(input[[input_id]] %||% "", outcome_value)) {
+        next
+      }
+
+      updateSelectInput(session, input_id, selected = outcome_value)
+    }
+  }
+
+  save_plot_png <- function(file, plot_obj) {
+    ggplot2::ggsave(
+      file,
+      plot = plot_obj,
+      scale = 0.7,
+      width = 14,
+      height = 10,
+      dpi = 300,
+      bg = "transparent"
+    )
+  }
+
   output$tbl_scripts <- renderDT({
     display_table(script_index, export_name = "code_overzicht")
   })
@@ -1224,7 +1418,11 @@ server <- function(input, output, session) {
     updateSelectInput(
       session, "year_outcome",
       choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
-      selected = outcomes[[1]]
+      selected = choose_preferred_choice(
+        outcomes,
+        current = input$year_outcome,
+        fallback = shared_outcome_selection()
+      )
     )
     updateCheckboxGroupInput(
       session, "year_sex",
@@ -1237,6 +1435,10 @@ server <- function(input, output, session) {
       selected = ordered_area_levels(df$amsterdam)
     )
   }, ignoreNULL = FALSE)
+
+  observeEvent(input$year_outcome, {
+    sync_outcome_across_tabs("year", input$year_outcome)
+  }, ignoreInit = TRUE)
 
   observeEvent(list(input$year_sheet, input$year_outcome), {
     df <- read_sheet_cached(input$year_sheet)
@@ -1311,17 +1513,11 @@ server <- function(input, output, session) {
     df
   })
 
-  output$plot_year <- plotly::renderPlotly({
+  year_plot_obj <- reactive({
     df <- year_filtered()
     validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- yearly_index[yearly_index$sheet == input$year_sheet, , drop = FALSE]
-    custom_annotations <- build_event_study_annotations(df)
-    if (length(custom_annotations) == 0) {
-      custom_annotations <- build_sex_annotations(df)
-    }
-    bottom_margin <- if (length(custom_annotations) > 1) 115 else 90
-
-    p <- build_time_series_plot(
+    build_time_series_plot(
       df = df,
       x_var = "year",
       title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
@@ -1332,14 +1528,40 @@ server <- function(input, output, session) {
       show_confidence = TRUE,
       include_zero = "yes" %in% (input$year_include_zero %||% character(0))
     )
+  })
 
-    plotly::ggplotly(p, tooltip = "text") |>
-      plotly::layout(
+  output$plot_year <- plotly::renderPlotly({
+    df <- year_filtered()
+    custom_annotations <- build_event_study_annotations(df)
+    if (length(custom_annotations) == 0) {
+      custom_annotations <- build_sex_annotations(df)
+    }
+    bottom_margin <- if (length(custom_annotations) > 1) 115 else 90
+
+    plotly::ggplotly(year_plot_obj(), tooltip = "text") |>
+      apply_plotly_transparent_layout(
         showlegend = FALSE,
         annotations = custom_annotations,
         margin = list(b = bottom_margin)
       )
   })
+
+  output$dl_year_plot <- downloadHandler(
+    filename = function() {
+      paste0(
+        build_export_name(
+          "grafiek_jaarlijkse_trends",
+          input$year_sheet %||% "dataset",
+          input$year_outcome %||% "uitkomst",
+          input$year_type %||% "statistiek"
+        ),
+        ".png"
+      )
+    },
+    content = function(file) {
+      save_plot_png(file, year_plot_obj())
+    }
+  )
 
   output$tbl_year <- renderDT({
     df <- year_filtered()
@@ -1365,7 +1587,11 @@ server <- function(input, output, session) {
     updateSelectInput(
       session, "es_mean_outcome",
       choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
-      selected = outcomes[[1]]
+      selected = choose_preferred_choice(
+        outcomes,
+        current = input$es_mean_outcome,
+        fallback = shared_outcome_selection()
+      )
     )
     updateCheckboxGroupInput(
       session, "es_mean_sex",
@@ -1378,6 +1604,10 @@ server <- function(input, output, session) {
       selected = ordered_area_levels(df$amsterdam)
     )
   }, ignoreNULL = FALSE)
+
+  observeEvent(input$es_mean_outcome, {
+    sync_outcome_across_tabs("es_mean", input$es_mean_outcome)
+  }, ignoreInit = TRUE)
 
   observeEvent(list(input$es_mean_sheet, input$es_mean_outcome), {
     df <- read_sheet_cached(input$es_mean_sheet)
@@ -1452,14 +1682,11 @@ server <- function(input, output, session) {
     df
   })
 
-  output$plot_es_mean <- plotly::renderPlotly({
+  es_mean_plot_obj <- reactive({
     df <- es_mean_filtered()
     validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- es_mean_index[es_mean_index$sheet == input$es_mean_sheet, , drop = FALSE]
-    custom_annotations <- build_event_study_annotations(df)
-    bottom_margin <- if (length(custom_annotations) > 0) 115 else 70
-
-    p <- build_time_series_plot(
+    build_time_series_plot(
       df = df,
       x_var = "years_since_diagnosis",
       title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
@@ -1470,9 +1697,15 @@ server <- function(input, output, session) {
       compact_facets = TRUE,
       include_zero = "yes" %in% (input$es_mean_include_zero %||% character(0))
     )
+  })
 
-    plotly::ggplotly(p, tooltip = "text") |>
-      plotly::layout(
+  output$plot_es_mean <- plotly::renderPlotly({
+    df <- es_mean_filtered()
+    custom_annotations <- build_event_study_annotations(df)
+    bottom_margin <- if (length(custom_annotations) > 0) 115 else 70
+
+    plotly::ggplotly(es_mean_plot_obj(), tooltip = "text") |>
+      apply_plotly_transparent_layout(
         showlegend = FALSE,
         annotations = custom_annotations,
         margin = list(b = bottom_margin),
@@ -1484,6 +1717,23 @@ server <- function(input, output, session) {
         )
       )
   })
+
+  output$dl_es_mean_plot <- downloadHandler(
+    filename = function() {
+      paste0(
+        build_export_name(
+          "grafiek_event_study_geobserveerde_gemiddelden",
+          input$es_mean_sheet %||% "dataset",
+          input$es_mean_outcome %||% "uitkomst",
+          input$es_mean_type %||% "statistiek"
+        ),
+        ".png"
+      )
+    },
+    content = function(file) {
+      save_plot_png(file, es_mean_plot_obj())
+    }
+  )
 
   output$tbl_es_mean <- renderDT({
     display_table(
@@ -1500,10 +1750,18 @@ server <- function(input, output, session) {
   observeEvent(input$es_ci_sheet, {
     df <- read_sheet_cached(input$es_ci_sheet)
     outcomes <- sort(unique(as.character(df$outcome)))
+    if (length(outcomes) == 0) {
+      updateSelectInput(session, "es_ci_outcome", choices = character(0), selected = character(0))
+      return()
+    }
     updateSelectInput(
       session, "es_ci_outcome",
       choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
-      selected = outcomes[[1]]
+      selected = choose_preferred_choice(
+        outcomes,
+        current = input$es_ci_outcome,
+        fallback = shared_outcome_selection()
+      )
     )
     updateCheckboxGroupInput(
       session, "es_ci_sex",
@@ -1516,6 +1774,10 @@ server <- function(input, output, session) {
       selected = ordered_area_levels(df$sample)
     )
   }, ignoreNULL = FALSE)
+
+  observeEvent(input$es_ci_outcome, {
+    sync_outcome_across_tabs("es_ci", input$es_ci_outcome)
+  }, ignoreInit = TRUE)
 
   es_ci_filtered <- reactive({
     req(input$es_ci_sheet, input$es_ci_outcome)
@@ -1531,7 +1793,7 @@ server <- function(input, output, session) {
       )
   })
 
-  output$plot_es_ci <- plotly::renderPlotly({
+  es_ci_plot_obj <- reactive({
     df <- es_ci_filtered()
     validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     sheet_meta <- es_ci_index[es_ci_index$sheet == input$es_ci_sheet, , drop = FALSE]
@@ -1572,8 +1834,12 @@ server <- function(input, output, session) {
       p <- p + facet_wrap(~sample)
     }
 
-    plotly::ggplotly(p, tooltip = "text") |>
-      plotly::layout(
+    p
+  })
+
+  output$plot_es_ci <- plotly::renderPlotly({
+    plotly::ggplotly(es_ci_plot_obj(), tooltip = "text") |>
+      apply_plotly_transparent_layout(
         legend = list(
           orientation = "h",
           x = 0,
@@ -1582,6 +1848,22 @@ server <- function(input, output, session) {
         )
       )
   })
+
+  output$dl_es_ci_plot <- downloadHandler(
+    filename = function() {
+      paste0(
+        build_export_name(
+          "grafiek_event_study_geschatte_effecten",
+          input$es_ci_sheet %||% "dataset",
+          input$es_ci_outcome %||% "uitkomst"
+        ),
+        ".png"
+      )
+    },
+    content = function(file) {
+      save_plot_png(file, es_ci_plot_obj())
+    }
+  )
 
   output$tbl_es_ci <- renderDT({
     display_table(
@@ -1633,7 +1915,7 @@ server <- function(input, output, session) {
       )
   })
 
-  output$plot_profile <- plotly::renderPlotly({
+  profile_plot_obj <- reactive({
     df <- profile_filtered()
     validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     palette_values <- profile_palette_for_labels(unique(df$condition_label))
@@ -1643,7 +1925,7 @@ server <- function(input, output, session) {
       profile_index$stage_label[profile_index$sheet == input$profile_sheet]
     )
 
-    p <- if (identical(input$profile_category, "leeftijd")) {
+    if (identical(input$profile_category, "leeftijd")) {
       df$tooltip <- paste0(
         "Conditie: ", df$condition_label, "<br>",
         "Geslacht: ", df$geslacht, "<br>",
@@ -1685,9 +1967,11 @@ server <- function(input, output, session) {
         ) +
         theme_dashboard()
     }
+  })
 
-    plotly::ggplotly(p, tooltip = "text") |>
-      plotly::layout(
+  output$plot_profile <- plotly::renderPlotly({
+    plotly::ggplotly(profile_plot_obj(), tooltip = "text") |>
+      apply_plotly_transparent_layout(
         legend = list(
           orientation = "h",
           x = 0,
@@ -1696,6 +1980,22 @@ server <- function(input, output, session) {
         )
       )
   })
+
+  output$dl_profile_plot <- downloadHandler(
+    filename = function() {
+      paste0(
+        build_export_name(
+          "grafiek_profielen",
+          input$profile_sheet %||% "dataset",
+          input$profile_category %||% "categorie"
+        ),
+        ".png"
+      )
+    },
+    content = function(file) {
+      save_plot_png(file, profile_plot_obj())
+    }
+  )
 
   output$tbl_profile <- renderDT({
     display_table(
@@ -1735,7 +2035,7 @@ server <- function(input, output, session) {
     kinds <- setdiff(unique(df$value_kind), "expected")
     kind_labels <- c(
       "Geobserveerd" = "observed",
-      "Afwijking t.o.v. verwachting" = "ratio"
+      "Index" = "ratio"
     )
     if (length(kinds) == 0) {
       updateSelectInput(session, "map_value_kind", choices = character(0), selected = character(0))
@@ -1912,6 +2212,9 @@ server <- function(input, output, session) {
     scale_limits <- expand_equal_range(scale_values)
     selected_limits <- expand_equal_range(selected_values$masked_value)
     legend_title <- map_legend_title(input$map_family, input$map_value_kind)
+    observed_high_color <- normalize_hex_color(input$map_observed_high_color, "#8B0A50")
+    ratio_low_color <- normalize_hex_color(input$map_ratio_low_color, "#483D8B")
+    ratio_high_color <- normalize_hex_color(input$map_ratio_high_color, "#FF0000")
     manual_scale_limits <- NULL
 
     if (identical(input$map_value_kind, "ratio") && isTRUE(input$map_manual_scale)) {
@@ -1944,9 +2247,9 @@ server <- function(input, output, session) {
     if (identical(input$map_value_kind, "ratio")) {
       p <- p +
         scale_fill_gradient2(
-          low = "darkslateblue",
+          low = ratio_low_color,
           mid = "white",
-          high = "red",
+          high = ratio_high_color,
           midpoint = 1,
           limits = manual_scale_limits %||% if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
           na.value = "lightgrey",
@@ -1957,7 +2260,7 @@ server <- function(input, output, session) {
         scale_fill_gradient2(
           low = "white",
           mid = "white",
-          high = "deeppink4",
+          high = observed_high_color,
           midpoint = if (!is.null(manual_scale_limits)) manual_scale_limits[[1]] else if (isTRUE(input$map_fixed_legend)) scale_limits[[1]] else selected_limits[[1]],
           limits = manual_scale_limits %||% if (isTRUE(input$map_fixed_legend)) scale_limits else NULL,
           na.value = "lightgrey",
@@ -1983,18 +2286,22 @@ server <- function(input, output, session) {
         plot.title = element_text(face = "bold", color = "#1f3c44", size = 17),
         plot.subtitle = element_text(color = "#5b6470"),
         panel.grid = element_blank(),
+        panel.background = element_rect(fill = "transparent", colour = NA),
+        plot.background = element_rect(fill = "transparent", colour = NA),
         axis.text = element_blank(),
         axis.title = element_blank(),
         axis.ticks = element_blank(),
         legend.position = "right",
+        legend.background = element_rect(fill = "transparent", colour = NA),
+        legend.key = element_rect(fill = "transparent", colour = NA),
         legend.title = element_text(face = "bold"),
-        rect = element_blank()
+        rect = element_rect(fill = "transparent", colour = NA)
       )
   })
 
   output$plot_map <- renderPlot({
     map_plot_obj()
-  }, res = 110)
+  }, res = 110, bg = "transparent")
 
   map_hovered_row <- reactive({
     hover <- input$plot_map_hover
@@ -2062,7 +2369,7 @@ server <- function(input, output, session) {
       )
     },
     content = function(file) {
-      ggplot2::ggsave(file, plot = map_plot_obj(), scale = 0.7, width = 14, height = 10, dpi = 300, bg = "white")
+      ggplot2::ggsave(file, plot = map_plot_obj(), scale = 0.7, width = 14, height = 10, dpi = 300, bg = "transparent")
     }
   )
 
