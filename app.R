@@ -36,9 +36,9 @@ resolve_existing_path <- function(candidates) {
   hit[[1]]
 }
 
-data_path <- resolve_existing_path(c("output.xlsx", "data/output.xlsx"))
+data_path <- resolve_existing_path(c("output_updated.xlsx", "output.xlsx", "data/output.xlsx"))
 if (is.na(data_path)) {
-  stop("Could not find output.xlsx in the project root or in a data/ folder.")
+  stop("Could not find output_updated.xlsx or output.xlsx in the project root or in a data/ folder.")
 }
 
 map_path <- resolve_existing_path(c("map.gpkg", "data/map.gpkg"))
@@ -133,10 +133,10 @@ pretty_metric_name <- function(x) {
   out
 }
 
-pretty_profile_condition <- function(x, condition_label) {
+pretty_profile_condition <- function(x, condition_label = NA_character_) {
   dplyr::case_when(
-    as.character(x) == "1" ~ paste("Met", condition_label),
-    as.character(x) == "0" ~ paste("Zonder", condition_label),
+    as.character(x) == "1" ~ "Met aandoening",
+    as.character(x) == "0" ~ "Zonder aandoening",
     TRUE ~ as.character(x)
   )
 }
@@ -226,6 +226,13 @@ build_export_name <- function(...) {
   sanitize_filename(paste(parts, collapse = "_"))
 }
 
+compose_title_parts <- function(...) {
+  parts <- c(...)
+  parts <- as.character(parts)
+  parts <- parts[!is.na(parts) & nzchar(parts)]
+  paste(parts, collapse = " | ")
+}
+
 choose_preferred_choice <- function(choices, current = NULL, fallback = NULL) {
   choices <- unique(as.character(choices))
   if (length(choices) == 0) {
@@ -238,6 +245,13 @@ choose_preferred_choice <- function(choices, current = NULL, fallback = NULL) {
     return(fallback)
   }
   choices[[1]]
+}
+
+first_or_empty <- function(x) {
+  if (length(x) == 0) {
+    return(character(0))
+  }
+  x[[1]]
 }
 
 normalize_hex_color <- function(value, fallback) {
@@ -290,6 +304,28 @@ apply_plotly_transparent_layout <- function(plot_obj, ...) {
     plotly::config(displayModeBar = FALSE, displaylogo = FALSE)
 }
 
+apply_plotly_y_range <- function(plot_obj, lower, upper) {
+  if (is.null(upper) || !is.finite(upper)) {
+    return(plot_obj)
+  }
+
+  layout_names <- names(plot_obj$x$layout %||% list())
+  yaxis_names <- layout_names[stringr::str_detect(layout_names, "^yaxis[0-9]*$")]
+
+  if (length(yaxis_names) == 0) {
+    yaxis_names <- "yaxis"
+  }
+
+  for (axis_name in yaxis_names) {
+    axis <- plot_obj$x$layout[[axis_name]] %||% list()
+    axis$range <- c(lower, upper)
+    axis$autorange <- FALSE
+    plot_obj$x$layout[[axis_name]] <- axis
+  }
+
+  plot_obj
+}
+
 format_script_goal <- function(path) {
   lines <- readLines(path, warn = FALSE, n = 12)
   goal_line <- lines[stringr::str_detect(lines, "^# Goal:")]
@@ -327,42 +363,157 @@ parse_dataset_context <- function(base_name) {
   )
 }
 
-build_sheet_index <- function(sheets, suffix_regex) {
+build_sheet_index <- function(sheets, parser) {
   rows <- lapply(sheets, function(sheet) {
-    base_name <- sub(suffix_regex, "", sheet)
-    context <- parse_dataset_context(base_name)
+    sheet_info <- parser(sheet)
+    context <- parse_dataset_context(sheet_info$base_name)
+    view_key <- sheet_info$view_key %||% NA_character_
+    view_label <- sheet_info$view_label %||% NA_character_
+    base_label <- if (is.na(context$condition_key)) {
+      paste(context$dataset_label, "| Alle personen |", sheet_info$period_label)
+    } else {
+      paste(context$dataset_label, "|", context$condition_label, "|", sheet_info$period_label)
+    }
+
     transform(
       context,
       sheet = sheet,
-      sheet_label = if (is.na(context$condition_key)) {
-        paste(context$dataset_label, "| Alle personen")
+      base_name = sheet_info$base_name,
+      period_key = sheet_info$period_key,
+      period_label = sheet_info$period_label,
+      view_key = view_key,
+      view_label = view_label,
+      sheet_label = if (!is.na(view_label) && nzchar(view_label)) {
+        paste(base_label, "|", view_label)
       } else {
-        paste(context$dataset_label, "|", context$condition_label)
+        base_label
       }
     )
   })
 
   dplyr::bind_rows(rows) |>
-    dplyr::arrange(dataset_label, condition_label, sheet)
+    dplyr::arrange(dataset_label, condition_label, period_label, view_label, sheet)
+}
+
+is_yearly_sheet <- function(sheet) {
+  stringr::str_detect(sheet, "_yr$")
+}
+
+parse_yearly_sheet <- function(sheet) {
+  if (stringr::str_detect(sheet, "_yr$")) {
+    return(list(base_name = sub("_yr$", "", sheet), period_key = "all_years", period_label = "Alle jaren"))
+  }
+
+  stop("Unsupported yearly sheet: ", sheet)
+}
+
+is_es_mean_sheet <- function(sheet) {
+  stringr::str_detect(sheet, "_es$")
+}
+
+parse_es_mean_sheet <- function(sheet) {
+  if (stringr::str_detect(sheet, "_es$")) {
+    return(list(
+      base_name = sub("_es$", "", sheet),
+      period_key = "all_years",
+      period_label = "Alle jaren"
+    ))
+  }
+
+  stop("Unsupported event-study means sheet: ", sheet)
+}
+
+is_snapshot_level_sheet <- function(sheet) {
+  stringr::str_detect(sheet, "_23$") &
+    !stringr::str_detect(sheet, "^profile_") &
+    !stringr::str_detect(sheet, "_es_diff_23$") &
+    !stringr::str_detect(sheet, "_es_23$")
+}
+
+parse_snapshot_level_sheet <- function(sheet) {
+  if (stringr::str_detect(sheet, "_23$")) {
+    return(list(
+      base_name = sub("_23$", "", sheet),
+      period_key = "2023",
+      period_label = "2023"
+    ))
+  }
+
+  stop("Unsupported 2023 levels sheet: ", sheet)
+}
+
+parse_es_ci_sheet <- function(sheet) {
+  if (stringr::str_detect(sheet, "_es_ci$")) {
+    return(list(base_name = sub("_es_ci$", "", sheet), period_key = "all_years", period_label = "Alle jaren"))
+  }
+
+  stop("Unsupported estimated-effects sheet: ", sheet)
 }
 
 sheet_names <- openxlsx::getSheetNames(data_path)
 
-yearly_index <- build_sheet_index(sheet_names[stringr::str_detect(sheet_names, "_yr$")], "_yr$")
-es_mean_index <- build_sheet_index(sheet_names[stringr::str_detect(sheet_names, "_es$")], "_es$")
-es_ci_index <- build_sheet_index(sheet_names[stringr::str_detect(sheet_names, "_es_ci$")], "_es_ci$")
+yearly_index <- build_sheet_index(sheet_names[is_yearly_sheet(sheet_names)], parse_yearly_sheet)
+es_mean_index <- build_sheet_index(sheet_names[is_es_mean_sheet(sheet_names)], parse_es_mean_sheet)
+es_ci_index <- build_sheet_index(sheet_names[stringr::str_detect(sheet_names, "_es_ci$")], parse_es_ci_sheet)
+snapshot_level_index <- build_sheet_index(
+  sheet_names[is_snapshot_level_sheet(sheet_names)],
+  parse_snapshot_level_sheet
+)
+
+yearly_index <- yearly_index |>
+  dplyr::mutate(
+    sheet_label = ifelse(
+      is.na(condition_key),
+      paste(dataset_label, "| Alle personen"),
+      paste(dataset_label, "|", condition_label)
+    )
+  )
+
+es_mean_index <- es_mean_index |>
+  dplyr::mutate(
+    sheet_label = ifelse(
+      is.na(condition_key),
+      paste(dataset_label, "| Alle personen"),
+      paste(dataset_label, "|", condition_label)
+    )
+  )
+
+es_ci_index <- es_ci_index |>
+  dplyr::mutate(
+    sheet_label = ifelse(
+      is.na(condition_key),
+      paste(dataset_label, "| Alle personen"),
+      paste(dataset_label, "|", condition_label)
+    )
+  )
+
+snapshot_level_index <- snapshot_level_index |>
+  dplyr::mutate(
+    sheet_label = ifelse(
+      is.na(condition_key),
+      paste(dataset_label, "| Alle personen"),
+      paste(dataset_label, "|", condition_label)
+    )
+  )
 
 profile_index <- {
   profile_sheets <- sheet_names[stringr::str_detect(sheet_names, "^profile_")]
   rows <- lapply(profile_sheets, function(sheet) {
-    match <- stringr::str_match(sheet, "^profile_(.*)_(before|after)_match$")
+    match <- stringr::str_match(sheet, "^profile_(.*)_(before|after)_(match|23)$")
     condition_key <- match[, 2]
     stage_key <- match[, 3]
+    period_key <- match[, 4]
     data.frame(
       sheet = sheet,
+      base_id = paste(condition_key, stage_key, sep = "__"),
       condition_key = condition_key,
       condition_label = pretty_condition(condition_key),
       stage_key = stage_key,
+      period_key = period_key,
+      period_label = dplyr::case_when(
+        period_key == "23" ~ "2023",
+        TRUE ~ "Alle jaren"
+      ),
       stage_label = dplyr::case_when(
         stage_key == "before" ~ "Voor matching",
         stage_key == "after" ~ "Na matching",
@@ -372,13 +523,32 @@ profile_index <- {
         stage_key == "before" ~ "Voor matching",
         stage_key == "after" ~ "Na matching",
         TRUE ~ pretty_default(stage_key)
+      ), "|", dplyr::case_when(
+        period_key == "23" ~ "2023",
+        TRUE ~ "Alle jaren"
       )),
       stringsAsFactors = FALSE
     )
   })
   dplyr::bind_rows(rows) |>
-    dplyr::arrange(condition_label, stage_key)
+    dplyr::arrange(condition_label, period_label, stage_key)
 }
+
+profile_base_index <- profile_index |>
+  dplyr::distinct(base_id, condition_label, stage_label) |>
+  dplyr::mutate(base_label = paste(condition_label, "|", stage_label)) |>
+  dplyr::arrange(condition_label, stage_label)
+
+snapshot_base_index <- snapshot_level_index |>
+  dplyr::distinct(base_name, dataset_label, condition_key, condition_label) |>
+  dplyr::mutate(
+    base_label = ifelse(
+      is.na(condition_key),
+      paste(dataset_label, "| Alle personen"),
+      paste(dataset_label, "|", condition_label)
+    )
+  ) |>
+  dplyr::arrange(dataset_label, condition_label)
 
 script_files <- list.files("code", pattern = "\\.R$", full.names = TRUE)
 script_index <- dplyr::bind_rows(lapply(script_files, function(path) {
@@ -406,7 +576,7 @@ condition_flag_col <- function(df) {
   known_cols <- c(
     "year", "years_since_diagnosis", "geslacht", "n_totaal", "variable",
     "value", "name", "type", "amsterdam", "se", "outcome", "sample",
-    "t", "coef", "lo", "hi", "n"
+    "t", "coef", "lo", "hi", "n", "n_met_conditie", "n_zonder_conditie"
   )
   candidates <- setdiff(names(df), known_cols)
   if (length(candidates) == 0) {
@@ -423,6 +593,117 @@ metric_labeler <- function(metric_name, stat_type = NA_character_) {
     return(scales::label_percent(accuracy = 1, decimal.mark = ","))
   }
   scales::label_number(big.mark = ".", decimal.mark = ",")
+}
+
+axis_metric_labeler <- function(metric_name, stat_type = NA_character_) {
+  base_labeler <- metric_labeler(metric_name, stat_type)
+
+  if (!difference_metric_is_share(metric_name, stat_type)) {
+    return(base_labeler)
+  }
+
+  function(x) {
+    labels <- base_labeler(x)
+    labels[is.finite(x) & x > 1] <- ""
+    labels
+  }
+}
+
+difference_metric_is_share <- function(metric_name, stat_type = NA_character_) {
+  is_share_metric <- stringr::str_starts(metric_name, "heeft_") || stringr::str_starts(metric_name, "gebruikt_")
+  is_count_type <- !is.na(stat_type) && stat_type %in% c("n_totaal_gebruikers", "sum_totaal_groep")
+  isTRUE(is_share_metric && !is_count_type)
+}
+
+metric_axis_upper_limit <- function(metric_name, stat_type = NA_character_) {
+  NULL
+}
+
+difference_metric_labeler <- function(metric_name, stat_type = NA_character_) {
+  if (difference_metric_is_share(metric_name, stat_type)) {
+    return(function(x) scales::number(x * 100, accuracy = 0.1, big.mark = ".", decimal.mark = ","))
+  }
+
+  metric_labeler(metric_name, stat_type)
+}
+
+compute_axis_lower_limit <- function(values, include_zero = FALSE, upper_limit = NULL) {
+  values <- values[is.finite(values)]
+
+  if (length(values) == 0) {
+    lower <- 0
+  } else {
+    lower <- min(values, na.rm = TRUE)
+  }
+
+  if (isTRUE(include_zero)) {
+    lower <- min(lower, 0)
+  }
+
+  if (!is.null(upper_limit) && (!is.finite(lower) || lower >= upper_limit)) {
+    lower <- min(0, upper_limit - max(abs(upper_limit) * 0.05, 0.01))
+  }
+
+  lower
+}
+
+compute_axis_upper_bound <- function(values, lower_limit = NULL, upper_limit = NULL) {
+  values <- values[is.finite(values)]
+
+  if (length(values) == 0) {
+    return(upper_limit %||% 1)
+  }
+
+  if (is.null(lower_limit) || !is.finite(lower_limit)) {
+    lower_limit <- min(values, na.rm = TRUE)
+  }
+
+  upper_value <- max(values, na.rm = TRUE)
+  span <- max(
+    upper_value - lower_limit,
+    abs(upper_value) * 0.12,
+    if (!is.null(upper_limit) && is.finite(upper_limit)) upper_limit * 0.02 else 1e-06
+  )
+
+  upper_bound <- upper_value + 0.08 * span
+
+  if (!is.null(upper_limit) && is.finite(upper_limit)) {
+    upper_bound <- min(upper_bound, upper_limit)
+  }
+
+  if (!is.finite(upper_bound) || upper_bound <= lower_limit) {
+    if (!is.null(upper_limit) && is.finite(upper_limit) && upper_limit > lower_limit) {
+      return(upper_limit)
+    }
+
+    return(lower_limit + max(abs(lower_limit) * 0.05, 0.01))
+  }
+
+  upper_bound
+}
+
+compute_condition_difference <- function(df, condition_col) {
+  if (is.na(condition_col) || !(condition_col %in% names(df))) {
+    return(df[0, , drop = FALSE])
+  }
+
+  df <- df |>
+    dplyr::mutate(.condition_status = pretty_binary(.data[[condition_col]]))
+
+  if (!all(c("Ja", "Nee") %in% unique(df$.condition_status))) {
+    return(df[0, setdiff(names(df), c(condition_col, ".condition_status")), drop = FALSE])
+  }
+
+  group_cols <- setdiff(names(df), c(condition_col, ".condition_status", "value", "n_totaal"))
+
+  df |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(group_cols))) |>
+    dplyr::summarise(
+      n_met_conditie = dplyr::first(n_totaal[.condition_status == "Ja"]),
+      n_zonder_conditie = dplyr::first(n_totaal[.condition_status == "Nee"]),
+      value = dplyr::first(value[.condition_status == "Ja"]) - dplyr::first(value[.condition_status == "Nee"]),
+      .groups = "drop"
+    )
 }
 
 display_table <- function(df, export_name = "gegevens", show_excel = TRUE) {
@@ -547,11 +828,13 @@ build_time_series_plot <- function(
   title,
   subtitle,
   y_labeler,
+  axis_labeler = y_labeler,
   vline = NULL,
   facet_var = NULL,
   compact_facets = FALSE,
   show_confidence = FALSE,
-  include_zero = FALSE
+  include_zero = FALSE,
+  y_max = NULL
 ) {
   color_col <- if ("color_value" %in% names(df)) "color_value" else "series"
   group_col <- if ("plot_group" %in% names(df)) "plot_group" else color_col
@@ -628,12 +911,24 @@ build_time_series_plot <- function(
     scale_color_manual(values = palette_values) +
     {if (has_confidence) scale_fill_manual(values = palette_values, guide = "none")} +
     scale_x_continuous(breaks = sort(unique(df[[x_var]]))) +
-    scale_y_continuous(labels = y_labeler) +
+    scale_y_continuous(labels = axis_labeler) +
     labs(title = title, subtitle = subtitle, color = NULL, linetype = NULL) +
     theme_dashboard()
 
   if (isTRUE(include_zero)) {
     p <- p + expand_limits(y = 0)
+  }
+
+  if (!is.null(y_max)) {
+    y_values <- if (has_confidence) c(df$ci_low, df$ci_high) else df$value
+    y_lower <- compute_axis_lower_limit(y_values, include_zero = include_zero, upper_limit = y_max)
+    y_upper <- compute_axis_upper_bound(y_values, lower_limit = y_lower, upper_limit = y_max)
+    p <- p + coord_cartesian(
+      ylim = c(
+        y_lower,
+        y_upper
+      )
+    )
   }
 
   if (!is.null(vline)) {
@@ -647,6 +942,277 @@ build_time_series_plot <- function(
         panel.spacing.x = if (isTRUE(compact_facets)) grid::unit(0.05, "lines") else grid::unit(0.3, "lines"),
         panel.spacing.y = if (isTRUE(compact_facets)) grid::unit(0.15, "lines") else grid::unit(0.4, "lines")
       )
+  }
+
+  p
+}
+
+build_snapshot_plot <- function(
+  level_df,
+  title,
+  subtitle,
+  y_labeler,
+  axis_labeler = y_labeler,
+  diff_labeler = y_labeler,
+  diff_df = NULL,
+  y_max = NULL
+) {
+  condition_col <- condition_flag_col(level_df)
+  has_condition <- !is.na(condition_col) &&
+    condition_col %in% names(level_df) &&
+    dplyr::n_distinct(level_df[[condition_col]]) > 1
+  sex_values <- unique(as.character(stats::na.omit(level_df$geslacht %||% character(0))))
+  has_sex <- "geslacht" %in% names(level_df) &&
+    length(sex_values) > 0 &&
+    all(sex_values %in% names(sex_palette))
+  time_text <- if ("year" %in% names(level_df) && dplyr::n_distinct(level_df$year) == 1) {
+    paste0("<br>Jaar: ", level_df$year)
+  } else if ("years_since_diagnosis" %in% names(level_df)) {
+    paste0("<br>Jaren sinds diagnose: ", level_df$years_since_diagnosis)
+  } else {
+    ""
+  }
+
+  if (has_condition) {
+    condition_levels <- unique(condition_status_label(c("Nee", "Ja")))
+
+    level_plot_df <- level_df |>
+      dplyr::mutate(
+        condition_display = condition_status_label(.data[[condition_col]]),
+        condition_legend = dplyr::case_when(
+          condition_display == "Ja" ~ "Met aandoening",
+          condition_display == "Nee" ~ "Zonder aandoening",
+          TRUE ~ condition_display
+        ),
+        x_value = factor(condition_display, levels = condition_levels),
+        fill_value = factor(condition_display, levels = condition_levels),
+        tooltip = paste0(
+          "Gebied: ", amsterdam,
+          if (has_sex) paste0("<br>Geslacht: ", geslacht) else "",
+          "<br>Diagnosestatus: ", condition_legend,
+          time_text,
+          if ("n_totaal" %in% names(level_df) && any(!is.na(level_df$n_totaal))) {
+            paste0(
+              "<br>n: ",
+              scales::number(n_totaal, accuracy = 1, big.mark = ".", decimal.mark = ",")
+            )
+          } else {
+            ""
+          },
+          "<br>Waarde: ", y_labeler(value)
+        )
+      )
+
+    if (has_sex) {
+      fill_values <- sex_palette
+      level_plot_df$fill_value <- factor(as.character(level_plot_df$geslacht), levels = ordered_sex_levels(level_plot_df$geslacht))
+      level_plot_df$alpha_value <- factor(
+        level_plot_df$condition_legend,
+        levels = c("Met aandoening", "Zonder aandoening")
+      )
+    } else {
+      fill_values <- profile_palette_for_labels(condition_levels)
+    }
+
+    p <- ggplot(
+      level_plot_df,
+      aes(
+        x = x_value,
+        y = value,
+        fill = fill_value,
+        text = tooltip
+      )
+    )
+
+    if (has_sex) {
+      p <- p +
+        geom_col(aes(alpha = alpha_value), width = 0.62, color = NA) +
+        scale_alpha_manual(
+          values = c("Met aandoening" = 1, "Zonder aandoening" = 0.45),
+          name = NULL
+        )
+    } else {
+      p <- p + geom_col(width = 0.62, color = NA)
+    }
+
+    p <- p +
+      scale_fill_manual(values = fill_values) +
+      scale_y_continuous(
+        labels = axis_labeler,
+        expand = ggplot2::expansion(mult = c(0.05, if (!is.null(diff_df) && nrow(diff_df) > 0) 0.22 else 0.08))
+      ) +
+      labs(
+        title = title,
+        subtitle = subtitle,
+        fill = NULL
+      ) +
+      theme_dashboard() +
+      expand_limits(y = 0)
+
+    y_lower <- compute_axis_lower_limit(level_plot_df$value, include_zero = TRUE, upper_limit = y_max)
+    y_upper <- compute_axis_upper_bound(level_plot_df$value, lower_limit = y_lower, upper_limit = y_max)
+
+    if (!is.null(y_max) || (!is.null(diff_df) && nrow(diff_df) > 0)) {
+      p <- p + coord_cartesian(
+        ylim = c(
+          y_lower,
+          y_upper
+        )
+      )
+    }
+
+    if (!is.null(diff_df) && nrow(diff_df) > 0) {
+      panel_keys <- c()
+      if (has_sex) {
+        panel_keys <- c(panel_keys, "geslacht")
+      }
+      if ("amsterdam" %in% names(level_plot_df) && dplyr::n_distinct(level_plot_df$amsterdam) > 1) {
+        panel_keys <- c(panel_keys, "amsterdam")
+      }
+
+      if (length(panel_keys) > 0) {
+        panel_max <- level_plot_df |>
+          dplyr::group_by(dplyr::across(dplyr::all_of(panel_keys))) |>
+          dplyr::summarise(
+            panel_max = max(value, na.rm = TRUE),
+            panel_min = min(value, na.rm = TRUE),
+            .groups = "drop"
+          )
+
+        diff_labels <- diff_df |>
+          dplyr::left_join(panel_max, by = panel_keys)
+      } else {
+        diff_labels <- diff_df |>
+          dplyr::mutate(
+            panel_max = max(level_plot_df$value, na.rm = TRUE),
+            panel_min = min(level_plot_df$value, na.rm = TRUE)
+          )
+      }
+
+      diff_labels <- diff_labels |>
+        dplyr::mutate(
+          span = pmax(panel_max - pmin(panel_min, 0), abs(panel_max) * 0.12, 1e-06),
+          available_upper = pmax(y_upper - 0.02 * span, panel_max),
+          available_gap = pmax(available_upper - panel_max, 0),
+          bracket_y = dplyr::if_else(
+            available_gap < 0.05 * span,
+            panel_max - 0.04 * span,
+            pmin(panel_max + 0.05 * span, panel_max + 0.55 * available_gap)
+          ),
+          label_y = dplyr::if_else(
+            available_gap < 0.05 * span,
+            bracket_y + 0.16 * span,
+            pmin(bracket_y + 0.1 * span, panel_max + 0.92 * available_gap)
+          ),
+          diff_label = diff_labeler(value),
+          x_left = 1,
+          x_right = 2,
+          x_mid = 1.5
+        )
+
+      p <- p +
+        geom_segment(
+          data = diff_labels,
+          aes(x = x_left, xend = x_right, y = bracket_y, yend = bracket_y),
+          inherit.aes = FALSE,
+          color = "#4b5563",
+          linewidth = 0.5
+        ) +
+        geom_segment(
+          data = diff_labels,
+          aes(x = x_left, xend = x_left, y = bracket_y, yend = bracket_y - 0.03 * span),
+          inherit.aes = FALSE,
+          color = "#4b5563",
+          linewidth = 0.5
+        ) +
+        geom_segment(
+          data = diff_labels,
+          aes(x = x_right, xend = x_right, y = bracket_y, yend = bracket_y - 0.03 * span),
+          inherit.aes = FALSE,
+          color = "#4b5563",
+          linewidth = 0.5
+        ) +
+        geom_text(
+          data = diff_labels,
+          aes(x = x_mid, y = label_y, label = diff_label),
+          inherit.aes = FALSE,
+          color = "#4b5563",
+          size = 4,
+          vjust = 0
+        )
+    }
+
+    if (has_sex && "amsterdam" %in% names(level_plot_df) && dplyr::n_distinct(level_plot_df$amsterdam) > 1) {
+      p <- p + facet_grid(geslacht ~ amsterdam)
+    } else if (has_sex) {
+      p <- p + facet_wrap(~geslacht, nrow = 1)
+    } else if ("amsterdam" %in% names(level_plot_df) && dplyr::n_distinct(level_plot_df$amsterdam) > 1) {
+      p <- p + facet_wrap(~amsterdam, nrow = 1)
+    }
+
+    return(p)
+  }
+
+  x_levels <- if (has_sex) ordered_sex_levels(level_df$geslacht) else "Waarde"
+  fill_values <- if (has_sex) palette_for_values(x_levels) else c(Waarde = "#4A96CF")
+
+  plot_df <- level_df |>
+    dplyr::mutate(
+      x_value = factor(if (has_sex) as.character(geslacht) else "Waarde", levels = x_levels),
+      fill_value = factor(if (has_sex) as.character(geslacht) else "Waarde", levels = x_levels),
+      tooltip = paste0(
+        "Gebied: ", amsterdam,
+        if (has_sex) paste0("<br>Geslacht: ", geslacht) else "",
+        time_text,
+        if ("n_totaal" %in% names(level_df) && any(!is.na(level_df$n_totaal))) {
+          paste0(
+            "<br>n: ",
+            scales::number(n_totaal, accuracy = 1, big.mark = ".", decimal.mark = ",")
+          )
+        } else {
+          ""
+        },
+        "<br>Waarde: ", y_labeler(value)
+      )
+    )
+
+  p <- ggplot(
+    plot_df,
+    aes(
+      x = x_value,
+      y = value,
+      fill = fill_value,
+      text = tooltip
+    )
+  ) +
+    geom_col(width = 0.62, color = NA) +
+    scale_fill_manual(values = fill_values) +
+    scale_y_continuous(labels = axis_labeler) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      fill = NULL
+    ) +
+    theme_dashboard() +
+    expand_limits(y = 0)
+
+  if (!is.null(y_max)) {
+    y_lower <- compute_axis_lower_limit(plot_df$value, include_zero = TRUE, upper_limit = y_max)
+    y_upper <- compute_axis_upper_bound(plot_df$value, lower_limit = y_lower, upper_limit = y_max)
+    p <- p + coord_cartesian(
+      ylim = c(
+        y_lower,
+        y_upper
+      )
+    )
+  }
+
+  if ("amsterdam" %in% names(plot_df) && dplyr::n_distinct(plot_df$amsterdam) > 1) {
+    p <- p + facet_wrap(~amsterdam, nrow = 1)
+  }
+
+  if (!has_sex) {
+    p <- p + theme(legend.position = "none")
   }
 
   p
@@ -776,13 +1342,15 @@ build_event_study_annotations <- function(df) {
 
   linetype_labels <- if (is.factor(df$linetype_value)) levels(df$linetype_value) else unique(as.character(df$linetype_value))
   linetype_labels <- linetype_labels[linetype_labels %in% unique(as.character(df$linetype_value))]
+  display_labels <- generic_condition_legend_label(linetype_labels)
   dash_map <- condition_linetype_values(linetype_labels)
   dash_order <- match(unname(dash_map), c("solid", "dashed", "dot", "dashdot"))
   dash_order[is.na(dash_order)] <- 99
-  linetype_labels <- linetype_labels[order(dash_order, linetype_labels)]
+  order_idx <- order(dash_order, linetype_labels)
+  linetype_labels <- linetype_labels[order_idx]
+  display_labels <- display_labels[order_idx]
 
-  build_sample <- function(label, color) {
-    dash_value <- dash_map[[label]] %||% "solid"
+  build_sample <- function(label, dash_value, color) {
     line_html <- if (identical(dash_value, "solid")) {
       "&#9473;&#9473;&#9473;"
     } else {
@@ -800,7 +1368,13 @@ build_event_study_annotations <- function(df) {
     sex <- sexes[[i]]
     color <- sex_palette[[sex]] %||% "#4b5563"
     row_text <- paste(
-      vapply(linetype_labels, build_sample, character(1), color = color),
+      vapply(seq_along(linetype_labels), function(j) {
+        build_sample(
+          display_labels[[j]],
+          dash_map[[linetype_labels[[j]]]] %||% "solid",
+          color
+        )
+      }, character(1)),
       collapse = "&nbsp;&nbsp;&nbsp;&nbsp;"
     )
 
@@ -855,6 +1429,81 @@ build_sex_annotations <- function(df) {
       font = list(size = 12, color = "#4b5563")
     )
   )
+}
+
+css_rgba <- function(color, alpha = 1) {
+  rgb_values <- grDevices::col2rgb(color)
+  sprintf(
+    "rgba(%d, %d, %d, %.3f)",
+    rgb_values[1, 1],
+    rgb_values[2, 1],
+    rgb_values[3, 1],
+    alpha
+  )
+}
+
+generic_condition_legend_label <- function(x) {
+  x_chr <- as.character(x)
+  dplyr::case_when(
+    stringr::str_detect(x_chr, "^Met\\b") | x_chr %in% c("Ja", "1", "TRUE", "true") ~ "Met aandoening",
+    stringr::str_detect(x_chr, "^Zonder\\b") | x_chr %in% c("Nee", "0", "FALSE", "false") ~ "Zonder aandoening",
+    TRUE ~ x_chr
+  )
+}
+
+build_snapshot_condition_annotations <- function(df) {
+  condition_col <- condition_flag_col(df)
+  if (
+    is.na(condition_col) ||
+    !("geslacht" %in% names(df)) ||
+    dplyr::n_distinct(df[[condition_col]]) <= 1
+  ) {
+    return(list())
+  }
+
+  sexes <- ordered_sex_levels(df$geslacht)
+  sexes <- sexes[sexes %in% unique(as.character(df$geslacht))]
+  if (length(sexes) == 0) {
+    return(list())
+  }
+
+  status_labels <- c("Met aandoening", "Zonder aandoening")
+  alpha_values <- c("Met aandoening" = 1, "Zonder aandoening" = 0.45)
+
+  build_sample <- function(label, color) {
+    paste0(
+      "<span style='color:", css_rgba(color, alpha_values[[label]]), ";'>&#9608;&#9608;</span>",
+      "&nbsp;", label
+    )
+  }
+
+  y_positions <- seq(-0.12, by = -0.07, length.out = length(sexes))
+
+  lapply(seq_along(sexes), function(i) {
+    sex <- sexes[[i]]
+    color <- sex_palette[[sex]] %||% "#4b5563"
+    row_text <- paste(
+      vapply(status_labels, build_sample, character(1), color = color),
+      collapse = "&nbsp;&nbsp;&nbsp;&nbsp;"
+    )
+
+    list(
+      x = 0,
+      y = y_positions[[i]],
+      xref = "paper",
+      yref = "paper",
+      xanchor = "left",
+      yanchor = "top",
+      align = "left",
+      showarrow = FALSE,
+      text = paste0(
+        "<span style='color:", color, "; font-weight:600;'>", sex, ":</span>",
+        "&nbsp;&nbsp;",
+        row_text
+      ),
+      font = list(size = 12, color = "#4b5563")
+    )
+  })
 }
 
 load_map_sf <- function(path) {
@@ -1200,6 +1849,7 @@ ui <- navbarPage(
               selectInput("es_mean_type", "Statistiek", choices = NULL),
               checkboxGroupInput("es_mean_sex", "Geslacht", choices = NULL),
               checkboxGroupInput("es_mean_region", "Gebied", choices = NULL),
+              uiOutput("es_mean_diff_ui"),
               checkboxGroupInput(
                 "es_mean_include_zero",
                 "Nul op y-as opnemen",
@@ -1240,15 +1890,38 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
+    "2023",
+    sidebarLayout(
+      sidebarPanel(
+        selectInput(
+          "snapshot_base",
+          "Dataset",
+          choices = stats::setNames(snapshot_base_index$base_name, snapshot_base_index$base_label),
+          selected = first_or_empty(snapshot_base_index$base_name)
+        ),
+        selectInput("snapshot_level_outcome", "Uitkomst", choices = NULL),
+        selectInput("snapshot_level_type", "Statistiek", choices = NULL),
+        checkboxGroupInput("snapshot_level_sex", "Geslacht", choices = NULL),
+        checkboxGroupInput("snapshot_level_region", "Gebied", choices = NULL),
+        downloadButton("dl_snapshot_level_plot", "Grafiek downloaden")
+      ),
+      mainPanel(
+        plotly::plotlyOutput("plot_snapshot_level", height = "560px"),
+        DTOutput("tbl_snapshot_level")
+      )
+    )
+  ),
+  tabPanel(
     "Profielen",
     sidebarLayout(
       sidebarPanel(
         selectInput(
-          "profile_sheet",
+          "profile_base",
           "Dataset",
-          choices = stats::setNames(profile_index$sheet, profile_index$sheet_label),
-          selected = profile_index$sheet[[1]]
+          choices = stats::setNames(profile_base_index$base_id, profile_base_index$base_label),
+          selected = first_or_empty(profile_base_index$base_id)
         ),
+        uiOutput("profile_period_ui"),
         selectInput("profile_category", "Categorie", choices = NULL),
         checkboxGroupInput("profile_sex", "Geslacht", choices = NULL),
         checkboxGroupInput("profile_region", "Gebied", choices = NULL),
@@ -1344,6 +2017,33 @@ ui <- navbarPage(
 server <- function(input, output, session) {
   shared_outcome_selection <- reactiveVal(NULL)
 
+  current_snapshot_sheet <- reactive({
+    req(input$snapshot_base)
+    candidates <- snapshot_level_index |>
+      dplyr::filter(base_name == input$snapshot_base)
+    req(nrow(candidates) > 0)
+
+    selected_sheet <- candidates$sheet[[1]]
+    req(length(selected_sheet) > 0, !is.na(selected_sheet))
+    selected_sheet
+  })
+
+  current_profile_sheet <- reactive({
+    req(input$profile_base)
+    candidates <- profile_index |>
+      dplyr::filter(base_id == input$profile_base)
+    req(nrow(candidates) > 0)
+
+    selected_period <- choose_preferred_choice(
+      choices = candidates$period_key,
+      current = input$profile_period,
+      fallback = "match"
+    )
+    selected_sheet <- candidates$sheet[candidates$period_key == selected_period][1]
+    req(length(selected_sheet) > 0, !is.na(selected_sheet))
+    selected_sheet
+  })
+
   available_outcomes_for_input <- function(kind) {
     if (identical(kind, "year")) {
       req(input$year_sheet)
@@ -1356,6 +2056,9 @@ server <- function(input, output, session) {
     if (identical(kind, "es_ci")) {
       req(input$es_ci_sheet)
       return(sort(unique(as.character(read_sheet_cached(input$es_ci_sheet)$outcome))))
+    }
+    if (identical(kind, "snapshot_level")) {
+      return(sort(unique(as.character(read_sheet_cached(current_snapshot_sheet())$name))))
     }
     character(0)
   }
@@ -1370,7 +2073,8 @@ server <- function(input, output, session) {
     target_specs <- list(
       year = "year_outcome",
       es_mean = "es_mean_outcome",
-      es_ci = "es_ci_outcome"
+      es_ci = "es_ci_outcome",
+      snapshot_level = "snapshot_level_outcome"
     )
 
     for (kind in setdiff(names(target_specs), source_kind)) {
@@ -1388,7 +2092,7 @@ server <- function(input, output, session) {
     }
   }
 
-  save_plot_png <- function(file, plot_obj) {
+  save_png_export <- function(file, plot_obj) {
     ggplot2::ggsave(
       file,
       plot = plot_obj,
@@ -1398,6 +2102,10 @@ server <- function(input, output, session) {
       dpi = 300,
       bg = "transparent"
     )
+  }
+
+  save_plot_png <- function(file, plot_obj) {
+    save_png_export(file, plot_obj)
   }
 
   map_color_values <- shiny::debounce(reactive({
@@ -1416,6 +2124,34 @@ server <- function(input, output, session) {
     display_table(
       data.frame(sheet = sheet_names, stringsAsFactors = FALSE),
       export_name = "werkbladen_output_xlsx"
+    )
+  })
+
+  output$profile_period_ui <- renderUI({
+    req(input$profile_base)
+    candidates <- profile_index |>
+      dplyr::filter(base_id == input$profile_base) |>
+      dplyr::distinct(period_key, period_label)
+    if (nrow(candidates) == 0) {
+      return(NULL)
+    }
+    candidates <- candidates |>
+      dplyr::mutate(period_order = dplyr::case_when(
+        period_key == "match" ~ 1,
+        period_key == "23" ~ 2,
+        TRUE ~ 99
+      )) |>
+      dplyr::arrange(period_order, period_label)
+
+    radioButtons(
+      "profile_period",
+      "Periode",
+      choices = stats::setNames(candidates$period_key, candidates$period_label),
+      selected = choose_preferred_choice(
+        candidates$period_key,
+        current = input$profile_period,
+        fallback = "match"
+      )
     )
   })
 
@@ -1476,7 +2212,10 @@ server <- function(input, output, session) {
     updateSelectInput(
       session, "year_type",
       choices = stats::setNames(types, pretty_type(types)),
-      selected = types[[1]]
+      selected = choose_preferred_choice(
+        types,
+        current = input$year_type
+      )
     )
   }, ignoreNULL = FALSE)
 
@@ -1532,13 +2271,15 @@ server <- function(input, output, session) {
     build_time_series_plot(
       df = df,
       x_var = "year",
-      title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
-      subtitle = paste(pretty_metric_name(input$year_outcome), "|", pretty_type(input$year_type)),
+      title = compose_title_parts(sheet_meta$dataset_label[[1]], sheet_meta$condition_label[[1]]),
+      subtitle = compose_title_parts(pretty_metric_name(input$year_outcome), pretty_type(input$year_type)),
       y_labeler = metric_labeler(input$year_outcome, input$year_type),
+      axis_labeler = axis_metric_labeler(input$year_outcome, input$year_type),
       facet_var = "amsterdam",
       compact_facets = TRUE,
       show_confidence = TRUE,
-      include_zero = "yes" %in% (input$year_include_zero %||% character(0))
+      include_zero = "yes" %in% (input$year_include_zero %||% character(0)),
+      y_max = metric_axis_upper_limit(input$year_outcome, input$year_type)
     )
   })
 
@@ -1549,13 +2290,35 @@ server <- function(input, output, session) {
       custom_annotations <- build_sex_annotations(df)
     }
     bottom_margin <- if (length(custom_annotations) > 1) 115 else 90
+    y_max <- metric_axis_upper_limit(input$year_outcome, input$year_type)
+    y_values <- if ("se" %in% names(df) && any(is.finite(df$se))) {
+      c(df$value - 1.96 * df$se, df$value + 1.96 * df$se)
+    } else {
+      df$value
+    }
 
-    plotly::ggplotly(year_plot_obj(), tooltip = "text") |>
-      apply_plotly_transparent_layout(
-        showlegend = FALSE,
-        annotations = custom_annotations,
-        margin = list(b = bottom_margin)
+    plot_obj <- plotly::ggplotly(year_plot_obj(), tooltip = "text")
+
+    if (!is.null(y_max)) {
+      y_lower <- compute_axis_lower_limit(
+        y_values,
+        include_zero = "yes" %in% (input$year_include_zero %||% character(0)),
+        upper_limit = y_max
       )
+      y_upper <- compute_axis_upper_bound(y_values, lower_limit = y_lower, upper_limit = y_max)
+      plot_obj <- apply_plotly_y_range(
+        plot_obj,
+        lower = y_lower,
+        upper = y_upper
+      )
+    }
+
+    apply_plotly_transparent_layout(
+      plot_obj,
+      showlegend = FALSE,
+      annotations = custom_annotations,
+      margin = list(b = bottom_margin)
+    )
   })
 
   output$dl_year_plot <- downloadHandler(
@@ -1645,11 +2408,39 @@ server <- function(input, output, session) {
     updateSelectInput(
       session, "es_mean_type",
       choices = stats::setNames(types, pretty_type(types)),
-      selected = types[[1]]
+      selected = choose_preferred_choice(
+        types,
+        current = input$es_mean_type
+      )
     )
   }, ignoreNULL = FALSE)
 
+  output$es_mean_diff_ui <- renderUI({
+    df <- read_sheet_cached(input$es_mean_sheet)
+    flag_col <- condition_flag_col(df)
+    if (is.na(flag_col) || dplyr::n_distinct(df[[flag_col]]) <= 1) {
+      return(NULL)
+    }
+    checkboxGroupInput(
+      "es_mean_show_diff",
+      "Verschil tonen",
+      choices = c("Ja" = "yes"),
+      selected = if ("yes" %in% (input$es_mean_show_diff %||% character(0))) "yes" else character(0)
+    )
+  })
+
+  es_mean_view_is_diff <- reactive({
+    df <- read_sheet_cached(input$es_mean_sheet)
+    flag_col <- condition_flag_col(df)
+    !is.na(flag_col) &&
+      dplyr::n_distinct(df[[flag_col]]) > 1 &&
+      "yes" %in% (input$es_mean_show_diff %||% character(0))
+  })
+
   output$es_mean_condition_ui <- renderUI({
+    if (isTRUE(es_mean_view_is_diff())) {
+      return(NULL)
+    }
     df <- read_sheet_cached(input$es_mean_sheet)
     flag_col <- condition_flag_col(df)
     if (is.na(flag_col)) {
@@ -1679,7 +2470,10 @@ server <- function(input, output, session) {
         amsterdam %in% selected_region
       )
 
-    if (!is.na(flag_col)) {
+    if (isTRUE(es_mean_view_is_diff())) {
+      df <- compute_condition_difference(df, flag_col)
+      flag_col <- NA_character_
+    } else if (!is.na(flag_col)) {
       selected_status <- input$es_mean_condition_filter %||% unique(as.character(df[[flag_col]]))
       df <- df |>
         dplyr::filter(.data[[flag_col]] %in% selected_status)
@@ -1701,33 +2495,62 @@ server <- function(input, output, session) {
     build_time_series_plot(
       df = df,
       x_var = "years_since_diagnosis",
-      title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
-      subtitle = paste(pretty_metric_name(input$es_mean_outcome), "|", pretty_type(input$es_mean_type)),
+      title = compose_title_parts(
+        sheet_meta$dataset_label[[1]],
+        sheet_meta$condition_label[[1]]
+      ),
+      subtitle = compose_title_parts(
+        pretty_metric_name(input$es_mean_outcome),
+        pretty_type(input$es_mean_type),
+        if (isTRUE(es_mean_view_is_diff())) "Verschil (met - zonder)"
+      ),
       y_labeler = metric_labeler(input$es_mean_outcome, input$es_mean_type),
+      axis_labeler = axis_metric_labeler(input$es_mean_outcome, input$es_mean_type),
       vline = 0,
       facet_var = "amsterdam",
       compact_facets = TRUE,
-      include_zero = "yes" %in% (input$es_mean_include_zero %||% character(0))
+      include_zero = "yes" %in% (input$es_mean_include_zero %||% character(0)),
+      y_max = metric_axis_upper_limit(input$es_mean_outcome, input$es_mean_type)
     )
   })
 
   output$plot_es_mean <- plotly::renderPlotly({
     df <- es_mean_filtered()
     custom_annotations <- build_event_study_annotations(df)
-    bottom_margin <- if (length(custom_annotations) > 0) 115 else 70
+    if (length(custom_annotations) == 0) {
+      custom_annotations <- build_sex_annotations(df)
+    }
+    bottom_margin <- if (length(custom_annotations) > 1) 115 else 90
+    y_max <- metric_axis_upper_limit(input$es_mean_outcome, input$es_mean_type)
 
-    plotly::ggplotly(es_mean_plot_obj(), tooltip = "text") |>
-      apply_plotly_transparent_layout(
-        showlegend = FALSE,
-        annotations = custom_annotations,
-        margin = list(b = bottom_margin),
-        legend = list(
-          orientation = "h",
-          x = 0,
-          xanchor = "left",
-          y = -0.2
-        )
+    plot_obj <- plotly::ggplotly(es_mean_plot_obj(), tooltip = "text")
+
+    if (!is.null(y_max)) {
+      y_lower <- compute_axis_lower_limit(
+        df$value,
+        include_zero = "yes" %in% (input$es_mean_include_zero %||% character(0)),
+        upper_limit = y_max
       )
+      y_upper <- compute_axis_upper_bound(df$value, lower_limit = y_lower, upper_limit = y_max)
+      plot_obj <- apply_plotly_y_range(
+        plot_obj,
+        lower = y_lower,
+        upper = y_upper
+      )
+    }
+
+    apply_plotly_transparent_layout(
+      plot_obj,
+      showlegend = FALSE,
+      annotations = custom_annotations,
+      margin = list(b = bottom_margin),
+      legend = list(
+        orientation = "h",
+        x = 0,
+        xanchor = "left",
+        y = -0.2
+      )
+    )
   })
 
   output$dl_es_mean_plot <- downloadHandler(
@@ -1737,7 +2560,8 @@ server <- function(input, output, session) {
           "grafiek_event_study_geobserveerde_gemiddelden",
           input$es_mean_sheet %||% "dataset",
           input$es_mean_outcome %||% "uitkomst",
-          input$es_mean_type %||% "statistiek"
+          input$es_mean_type %||% "statistiek",
+          if (isTRUE(es_mean_view_is_diff())) "verschil" else "niveaus"
         ),
         ".png"
       )
@@ -1754,7 +2578,208 @@ server <- function(input, output, session) {
         "event_study_geobserveerde_gemiddelden",
         input$es_mean_sheet %||% "dataset",
         input$es_mean_outcome %||% "uitkomst",
-        input$es_mean_type %||% "statistiek"
+        input$es_mean_type %||% "statistiek",
+        if (isTRUE(es_mean_view_is_diff())) "verschil" else "niveaus"
+      )
+    )
+  })
+
+  observeEvent(input$snapshot_base, {
+    df <- read_sheet_cached(current_snapshot_sheet())
+    outcomes <- sort(unique(as.character(df$name)))
+    if (length(outcomes) == 0) {
+      updateSelectInput(session, "snapshot_level_outcome", choices = character(0), selected = character(0))
+      updateSelectInput(session, "snapshot_level_type", choices = character(0), selected = character(0))
+      return()
+    }
+    updateSelectInput(
+      session, "snapshot_level_outcome",
+      choices = stats::setNames(outcomes, pretty_metric_name(outcomes)),
+      selected = choose_preferred_choice(
+        outcomes,
+        current = input$snapshot_level_outcome,
+        fallback = shared_outcome_selection()
+      )
+    )
+    updateCheckboxGroupInput(
+      session, "snapshot_level_sex",
+      choices = ordered_sex_levels(df$geslacht),
+      selected = ordered_sex_levels(df$geslacht)
+    )
+    updateCheckboxGroupInput(
+      session, "snapshot_level_region",
+      choices = ordered_area_levels(df$amsterdam),
+      selected = ordered_area_levels(df$amsterdam)
+    )
+  }, ignoreNULL = FALSE)
+
+  observeEvent(input$snapshot_level_outcome, {
+    sync_outcome_across_tabs("snapshot_level", input$snapshot_level_outcome)
+  }, ignoreInit = TRUE)
+
+  observeEvent(list(input$snapshot_base, input$snapshot_level_outcome), {
+    df <- read_sheet_cached(current_snapshot_sheet())
+    outcomes <- sort(unique(as.character(df$name)))
+    if (length(outcomes) == 0) {
+      updateSelectInput(session, "snapshot_level_type", choices = character(0), selected = character(0))
+      return()
+    }
+    active_outcome <- input$snapshot_level_outcome
+    if (is.null(active_outcome) || !nzchar(active_outcome) || !(active_outcome %in% outcomes)) {
+      active_outcome <- outcomes[[1]]
+    }
+    types <- df |>
+      dplyr::filter(name == active_outcome) |>
+      dplyr::pull(type) |>
+      as.character() |>
+      unique() |>
+      sort()
+    if (length(types) == 0) {
+      updateSelectInput(session, "snapshot_level_type", choices = character(0), selected = character(0))
+      return()
+    }
+    updateSelectInput(
+      session, "snapshot_level_type",
+      choices = stats::setNames(types, pretty_type(types)),
+      selected = choose_preferred_choice(
+        types,
+        current = input$snapshot_level_type
+      )
+    )
+  }, ignoreNULL = FALSE)
+
+  snapshot_level_filtered <- reactive({
+    req(current_snapshot_sheet(), input$snapshot_level_outcome, input$snapshot_level_type)
+    df <- read_sheet_cached(current_snapshot_sheet())
+    selected_sex <- input$snapshot_level_sex %||% unique(as.character(df$geslacht))
+    selected_region <- input$snapshot_level_region %||% unique(as.character(df$amsterdam))
+
+    df <- df |>
+      dplyr::filter(
+        name == input$snapshot_level_outcome,
+        type == input$snapshot_level_type,
+        geslacht %in% selected_sex,
+        amsterdam %in% selected_region
+      ) |>
+      dplyr::mutate(amsterdam = factor(as.character(amsterdam), levels = ordered_area_levels(selected_region)))
+
+    df
+  })
+
+  snapshot_level_diff <- reactive({
+    df <- snapshot_level_filtered()
+    flag_col <- condition_flag_col(df)
+    compute_condition_difference(df, flag_col) |>
+      dplyr::mutate(amsterdam = factor(as.character(amsterdam), levels = levels(df$amsterdam)))
+  })
+
+  snapshot_level_table_data <- reactive({
+    level_df <- snapshot_level_filtered() |>
+      dplyr::mutate(weergave = "Niveaus")
+    diff_df <- snapshot_level_diff()
+
+    if (nrow(diff_df) == 0) {
+      return(level_df)
+    }
+
+    dplyr::bind_rows(
+      level_df,
+      diff_df |>
+        dplyr::mutate(weergave = "Verschil (met - zonder)")
+    )
+  })
+
+  snapshot_level_plot_obj <- reactive({
+    df <- snapshot_level_filtered()
+    validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
+    sheet_meta <- snapshot_level_index[snapshot_level_index$sheet == current_snapshot_sheet(), , drop = FALSE]
+    build_snapshot_plot(
+      level_df = df,
+      title = compose_title_parts(
+        sheet_meta$dataset_label[[1]],
+        sheet_meta$condition_label[[1]],
+        "2023"
+      ),
+      subtitle = compose_title_parts(
+        pretty_metric_name(input$snapshot_level_outcome),
+        pretty_type(input$snapshot_level_type),
+        if (nrow(snapshot_level_diff()) > 0) "inclusief verschil (met - zonder)"
+      ),
+      y_labeler = metric_labeler(input$snapshot_level_outcome, input$snapshot_level_type),
+      axis_labeler = axis_metric_labeler(input$snapshot_level_outcome, input$snapshot_level_type),
+      diff_labeler = difference_metric_labeler(input$snapshot_level_outcome, input$snapshot_level_type),
+      diff_df = snapshot_level_diff(),
+      y_max = metric_axis_upper_limit(input$snapshot_level_outcome, input$snapshot_level_type)
+    )
+  })
+
+  output$plot_snapshot_level <- plotly::renderPlotly({
+    df <- snapshot_level_filtered()
+    y_max <- metric_axis_upper_limit(input$snapshot_level_outcome, input$snapshot_level_type)
+    plot_obj <- plotly::ggplotly(snapshot_level_plot_obj(), tooltip = "text")
+    custom_annotations <- build_snapshot_condition_annotations(df)
+    if (length(custom_annotations) == 0) {
+      custom_annotations <- build_sex_annotations(df)
+    }
+    bottom_margin <- if (length(custom_annotations) > 1) 130 else if (length(custom_annotations) == 1) 100 else 80
+
+    if (!is.null(y_max)) {
+      y_lower <- compute_axis_lower_limit(
+        df$value,
+        include_zero = TRUE,
+        upper_limit = y_max
+      )
+      y_upper <- compute_axis_upper_bound(
+        df$value,
+        lower_limit = y_lower,
+        upper_limit = y_max
+      )
+      plot_obj <- apply_plotly_y_range(
+        plot_obj,
+        lower = y_lower,
+        upper = y_upper
+      )
+    }
+
+    apply_plotly_transparent_layout(
+      plot_obj,
+      showlegend = FALSE,
+      annotations = custom_annotations,
+      margin = list(b = bottom_margin),
+      legend = list(
+        orientation = "h",
+        x = 0,
+        xanchor = "left",
+        y = -0.2
+      )
+    )
+  })
+
+  output$dl_snapshot_level_plot <- downloadHandler(
+    filename = function() {
+      paste0(
+        build_export_name(
+          "grafiek_2023_overzicht",
+          input$snapshot_base %||% "dataset",
+          input$snapshot_level_outcome %||% "uitkomst",
+          input$snapshot_level_type %||% "statistiek"
+        ),
+        ".png"
+      )
+    },
+    content = function(file) {
+      save_plot_png(file, snapshot_level_plot_obj())
+    }
+  )
+
+  output$tbl_snapshot_level <- renderDT({
+    display_table(
+      snapshot_level_table_data(),
+      export_name = build_export_name(
+        "gegevens_2023_overzicht",
+        input$snapshot_base %||% "dataset",
+        input$snapshot_level_outcome %||% "uitkomst",
+        input$snapshot_level_type %||% "statistiek"
       )
     )
   })
@@ -1832,7 +2857,7 @@ server <- function(input, output, session) {
       scale_x_continuous(breaks = sort(unique(df$t))) +
       scale_y_continuous(labels = scales::label_number(big.mark = ".", decimal.mark = ",")) +
       labs(
-        title = paste(sheet_meta$dataset_label[[1]], "-", sheet_meta$condition_label[[1]]),
+        title = compose_title_parts(sheet_meta$dataset_label[[1]], sheet_meta$condition_label[[1]]),
         subtitle = pretty_metric_name(input$es_ci_outcome),
         color = NULL
       ) +
@@ -1888,8 +2913,8 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$profile_sheet, {
-    df <- read_sheet_cached(input$profile_sheet)
+  observeEvent(list(input$profile_base, input$profile_period), {
+    df <- read_sheet_cached(current_profile_sheet())
     categories <- sort(unique(as.character(df$category)))
     updateSelectInput(
       session, "profile_category",
@@ -1909,11 +2934,11 @@ server <- function(input, output, session) {
   }, ignoreNULL = FALSE)
 
   profile_filtered <- reactive({
-    req(input$profile_sheet, input$profile_category)
-    df <- read_sheet_cached(input$profile_sheet)
+    req(current_profile_sheet(), input$profile_category)
+    df <- read_sheet_cached(current_profile_sheet())
     selected_sex <- input$profile_sex %||% unique(as.character(df$geslacht))
     selected_region <- input$profile_region %||% unique(as.character(df$amsterdam))
-    profile_meta <- profile_index[profile_index$sheet == input$profile_sheet, , drop = FALSE]
+    profile_meta <- profile_index[profile_index$sheet == current_profile_sheet(), , drop = FALSE]
 
     df |>
       dplyr::filter(
@@ -1931,10 +2956,10 @@ server <- function(input, output, session) {
     df <- profile_filtered()
     validate(need(nrow(df) > 0, "Geen gegevens beschikbaar voor de huidige selectie."))
     palette_values <- profile_palette_for_labels(unique(df$condition_label))
-    title_text <- paste(
-      profile_index$condition_label[profile_index$sheet == input$profile_sheet],
-      "-",
-      profile_index$stage_label[profile_index$sheet == input$profile_sheet]
+    title_text <- compose_title_parts(
+      profile_index$condition_label[profile_index$sheet == current_profile_sheet()],
+      profile_index$stage_label[profile_index$sheet == current_profile_sheet()],
+      profile_index$period_label[profile_index$sheet == current_profile_sheet()]
     )
 
     if (identical(input$profile_category, "leeftijd")) {
@@ -1998,7 +3023,8 @@ server <- function(input, output, session) {
       paste0(
         build_export_name(
           "grafiek_profielen",
-          input$profile_sheet %||% "dataset",
+          input$profile_base %||% "dataset",
+          input$profile_period %||% "periode",
           input$profile_category %||% "categorie"
         ),
         ".png"
@@ -2014,7 +3040,8 @@ server <- function(input, output, session) {
       profile_filtered(),
       export_name = build_export_name(
         "profielen",
-        input$profile_sheet %||% "dataset",
+        input$profile_base %||% "dataset",
+        input$profile_period %||% "periode",
         input$profile_category %||% "categorie"
       )
     )
@@ -2382,7 +3409,7 @@ server <- function(input, output, session) {
       )
     },
     content = function(file) {
-      ggplot2::ggsave(file, plot = map_plot_obj(), scale = 0.7, width = 14, height = 10, dpi = 300, bg = "transparent")
+      save_png_export(file, map_plot_obj())
     }
   )
 
