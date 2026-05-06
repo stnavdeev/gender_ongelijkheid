@@ -119,7 +119,16 @@ pretty_binary <- function(x) {
 }
 
 pretty_metric_name <- function(x) {
-  out <- x
+  x_chr <- as.character(x)
+  overrides <- c(
+    gebruikt_zvwkggzzpmtotaal = "GGZ",
+    zvwkggzzpmtotaal = "GGZ",
+    gebruikt_nopzvwkggzzpmverblijf = "GGZ",
+    nopzvwkggzzpmverblijf = "GGZ"
+  )
+
+  override_hit <- unname(overrides[x_chr])
+  out <- x_chr
   out <- stringr::str_replace(out, "^gebruikt_", "gebruik ")
   out <- stringr::str_replace(out, "^heeft_", "")
   out <- stringr::str_replace(out, "^kosten_", "kosten ")
@@ -130,6 +139,7 @@ pretty_metric_name <- function(x) {
   out <- stringr::str_replace_all(out, "Poh Ggz", "POH GGZ")
   out <- stringr::str_replace_all(out, "Ggz", "GGZ")
   out <- stringr::str_replace_all(out, "Msz", "MSZ")
+  out[!is.na(override_hit)] <- override_hit[!is.na(override_hit)]
   out
 }
 
@@ -144,7 +154,10 @@ pretty_profile_condition <- function(x, condition_label = NA_character_) {
 family_key_from_metric <- function(x) {
   dplyr::case_when(
     stringr::str_starts(x, "heeft_") ~ "heeft",
+    stringr::str_starts(x, "gebruikt_") ~ "heeft",
     stringr::str_starts(x, "kosten_") ~ "kosten",
+    stringr::str_starts(x, "zvwk") ~ "kosten",
+    stringr::str_starts(x, "nopzvwk") ~ "kosten",
     stringr::str_starts(x, "n_") ~ "n",
     TRUE ~ "other"
   )
@@ -255,16 +268,30 @@ first_or_empty <- function(x) {
 }
 
 normalize_hex_color <- function(value, fallback) {
-  if (is.null(value) || !nzchar(value)) {
+  if (is.null(value) || length(value) == 0) {
     return(fallback)
   }
 
-  value <- as.character(value)[[1]]
-  if (!grepl("^#[0-9A-Fa-f]{6}$", value)) {
+  value <- stringr::str_trim(as.character(value)[[1]])
+  if (!nzchar(value)) {
     return(fallback)
   }
 
-  value
+  value <- sub("^#", "", value)
+
+  if (grepl("^[0-9A-Fa-f]{3}$", value)) {
+    value <- paste0(strsplit(value, "")[[1]], strsplit(value, "")[[1]], collapse = "")
+  } else if (grepl("^[0-9A-Fa-f]{7}$", value)) {
+    value <- substr(value, 1, 6)
+  } else if (grepl("^[0-9A-Fa-f]{8}$", value)) {
+    value <- substr(value, 1, 6)
+  }
+
+  if (!grepl("^[0-9A-Fa-f]{6}$", value)) {
+    return(fallback)
+  }
+
+  paste0("#", toupper(value))
 }
 
 color_picker_input <- function(id, label, value) {
@@ -280,9 +307,9 @@ color_picker_input <- function(id, label, value) {
       cancel = FALSE,
       clear = FALSE,
       save = FALSE,
-      hex = FALSE,
+      hex = TRUE,
       rgba = FALSE,
-      input = FALSE
+      input = TRUE
     ),
     theme = "classic",
     update = "changestop",
@@ -1974,7 +2001,7 @@ ui <- navbarPage(
           choices = c("10" = "10", "30" = "30", "50" = "50"),
           selected = "10"
         ),
-        checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = FALSE),
+        checkboxInput("map_exclude_westpoort", "Westpoort uitsluiten", value = TRUE),
         checkboxInput("map_fixed_legend", "Legenda voor gekozen uitkomst vastzetten", value = TRUE),
         checkboxInput("map_show_labels", "Labels van stadsdelen tonen", value = TRUE),
         conditionalPanel(
