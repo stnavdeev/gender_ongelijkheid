@@ -121,10 +121,14 @@ pretty_binary <- function(x) {
 pretty_metric_name <- function(x) {
   x_chr <- as.character(x)
   overrides <- c(
-    gebruikt_zvwkggzzpmtotaal = "GGZ",
+    gebruikt_zvwkggzzpmtotaal = "Gebruik GGZ",
     zvwkggzzpmtotaal = "GGZ",
-    gebruikt_nopzvwkggzzpmverblijf = "GGZ",
-    nopzvwkggzzpmverblijf = "GGZ"
+    gebruikt_nopzvwkggzzpmverblijf = "Gebruik GGZ verblijf",
+    nopzvwkggzzpmverblijf = "GGZ verblijf",
+    gebruikt_zvwkgenbasggz = "Gebruik GGZ basis",
+    zvwkgenbasggz = "GGZ basis",
+    gebruikt_zvwkspecggz = "Gebruik GGZ specialistisch",
+    zvwkspecggz = "GGZ specialistisch"
   )
 
   override_hit <- unname(overrides[x_chr])
@@ -141,6 +145,18 @@ pretty_metric_name <- function(x) {
   out <- stringr::str_replace_all(out, "Msz", "MSZ")
   out[!is.na(override_hit)] <- override_hit[!is.na(override_hit)]
   out
+}
+
+hidden_outcome_pattern <- "(ggzzpmverblij|genbasggz)"
+
+is_hidden_outcome <- function(x) {
+  x_chr <- as.character(x)
+  is.na(x_chr) | stringr::str_detect(x_chr, hidden_outcome_pattern)
+}
+
+visible_outcomes <- function(x) {
+  x_chr <- unique(as.character(x))
+  x_chr[!is_hidden_outcome(x_chr)]
 }
 
 pretty_profile_condition <- function(x, condition_label = NA_character_) {
@@ -2074,24 +2090,24 @@ server <- function(input, output, session) {
   available_outcomes_for_input <- function(kind) {
     if (identical(kind, "year")) {
       req(input$year_sheet)
-      return(sort(unique(as.character(read_sheet_cached(input$year_sheet)$name))))
+      return(sort(visible_outcomes(read_sheet_cached(input$year_sheet)$name)))
     }
     if (identical(kind, "es_mean")) {
       req(input$es_mean_sheet)
-      return(sort(unique(as.character(read_sheet_cached(input$es_mean_sheet)$name))))
+      return(sort(visible_outcomes(read_sheet_cached(input$es_mean_sheet)$name)))
     }
     if (identical(kind, "es_ci")) {
       req(input$es_ci_sheet)
-      return(sort(unique(as.character(read_sheet_cached(input$es_ci_sheet)$outcome))))
+      return(sort(visible_outcomes(read_sheet_cached(input$es_ci_sheet)$outcome)))
     }
     if (identical(kind, "snapshot_level")) {
-      return(sort(unique(as.character(read_sheet_cached(current_snapshot_sheet())$name))))
+      return(sort(visible_outcomes(read_sheet_cached(current_snapshot_sheet())$name)))
     }
     character(0)
   }
 
   sync_outcome_across_tabs <- function(source_kind, outcome_value) {
-    if (is.null(outcome_value) || !nzchar(outcome_value)) {
+    if (is.null(outcome_value) || !nzchar(outcome_value) || is_hidden_outcome(outcome_value)) {
       return()
     }
 
@@ -2184,7 +2200,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$year_sheet, {
     df <- read_sheet_cached(input$year_sheet)
-    outcomes <- sort(unique(as.character(df$name)))
+    outcomes <- sort(visible_outcomes(df$name))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "year_outcome", choices = character(0), selected = character(0))
       updateSelectInput(session, "year_type", choices = character(0), selected = character(0))
@@ -2217,7 +2233,7 @@ server <- function(input, output, session) {
 
   observeEvent(list(input$year_sheet, input$year_outcome), {
     df <- read_sheet_cached(input$year_sheet)
-    outcomes <- sort(unique(as.character(df$name)))
+    outcomes <- sort(visible_outcomes(df$name))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "year_type", choices = character(0), selected = character(0))
       return()
@@ -2380,7 +2396,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$es_mean_sheet, {
     df <- read_sheet_cached(input$es_mean_sheet)
-    outcomes <- sort(unique(as.character(df$name)))
+    outcomes <- sort(visible_outcomes(df$name))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "es_mean_outcome", choices = character(0), selected = character(0))
       updateSelectInput(session, "es_mean_type", choices = character(0), selected = character(0))
@@ -2413,7 +2429,7 @@ server <- function(input, output, session) {
 
   observeEvent(list(input$es_mean_sheet, input$es_mean_outcome), {
     df <- read_sheet_cached(input$es_mean_sheet)
-    outcomes <- sort(unique(as.character(df$name)))
+    outcomes <- sort(visible_outcomes(df$name))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "es_mean_type", choices = character(0), selected = character(0))
       return()
@@ -2613,7 +2629,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$snapshot_base, {
     df <- read_sheet_cached(current_snapshot_sheet())
-    outcomes <- sort(unique(as.character(df$name)))
+    outcomes <- sort(visible_outcomes(df$name))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "snapshot_level_outcome", choices = character(0), selected = character(0))
       updateSelectInput(session, "snapshot_level_type", choices = character(0), selected = character(0))
@@ -2646,7 +2662,7 @@ server <- function(input, output, session) {
 
   observeEvent(list(input$snapshot_base, input$snapshot_level_outcome), {
     df <- read_sheet_cached(current_snapshot_sheet())
-    outcomes <- sort(unique(as.character(df$name)))
+    outcomes <- sort(visible_outcomes(df$name))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "snapshot_level_type", choices = character(0), selected = character(0))
       return()
@@ -2813,7 +2829,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$es_ci_sheet, {
     df <- read_sheet_cached(input$es_ci_sheet)
-    outcomes <- sort(unique(as.character(df$outcome)))
+    outcomes <- sort(visible_outcomes(df$outcome))
     if (length(outcomes) == 0) {
       updateSelectInput(session, "es_ci_outcome", choices = character(0), selected = character(0))
       return()
@@ -3165,6 +3181,7 @@ server <- function(input, output, session) {
 
     outcomes <- df |>
       dplyr::distinct(outcome_key, outcome_label) |>
+      dplyr::filter(!is_hidden_outcome(outcome_key)) |>
       dplyr::arrange(outcome_label)
     if (nrow(outcomes) == 0) {
       updateSelectInput(session, "map_outcome", choices = character(0), selected = character(0))
